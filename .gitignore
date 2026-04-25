@@ -1,0 +1,39 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Generated job data and confidential user artifacts
+jobs/
+storage/*.sqlite3
+storage/*.sqlite
+storage/*.db
+
+# Logs
+*.log
+streamlit.log
+streamlit.err.log
+
+# Python caches and build outputs
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Local virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
