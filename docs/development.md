@@ -90,6 +90,14 @@ This test proves the local fallback path works.
 - validation and phase grouping.
 - model JSON parsing and fallback generation.
 
+`tests/test_segmentation.py` covers:
+
+- adaptive segmentation thresholds.
+- OCR token Jaccard behavior.
+- scroll-only collapse.
+- screen-state recurrence.
+- synthetic SAP-to-Excel-to-SAP segmentation.
+
 ## Known Development Limits
 
 - There is no multi-user queue.

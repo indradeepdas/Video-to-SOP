@@ -4,16 +4,13 @@ import json
 import traceback
 from pathlib import Path
 
-from pipeline.classify import classify_events
-from pipeline.clean_ocr import clean_ocr_results
-from pipeline.cluster import cluster_events, prune_events
 from pipeline.config import DEFAULT_PROFILE, estimate_job_cost, get_profile, profile_to_dict
 from pipeline.docx_export import export_docx
 from pipeline.generate import generate_steps
-from pipeline.ocr import run_ocr
+from pipeline.segmentation import segment_frames, segmentation_report
 from pipeline.validate import group_phases, validate_steps
 from pipeline.verify import verify_steps
-from pipeline.video import extract_frames, select_representative_frames
+from pipeline.video import extract_frames
 from storage.jobs import get_job, update_job
 
 
@@ -25,6 +22,11 @@ def _process_name_from_file(path: str | Path) -> str:
 def _write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
@@ -49,38 +51,41 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
         return merged
 
     try:
-        update_job(db_path, job_id, status="running", progress=0.05, message="Extracting frames")
+        update_job(db_path, job_id, status="running", progress=0.05, message="Extracting dense frame metrics")
         frames = extract_frames(
             input_path,
             frames_dir,
-            interval_seconds=profile.frame_interval_seconds,
-            max_frames=profile.max_extracted_frames,
+            interval_seconds=profile.metric_interval_seconds,
+            max_frames=profile.max_metric_frames,
         )
         _write_json(artifacts_dir / "frames.json", frames)
 
-        update_job(db_path, job_id, progress=0.22, message="Selecting representative frames")
-        selected = select_representative_frames(frames, max_selected=profile.max_selected_frames)
-        _write_json(artifacts_dir / "selected_frames.json", selected)
+        update_job(db_path, job_id, progress=0.24, message="Detecting adaptive screen boundaries")
+        segmentation = segment_frames(
+            frames,
+            max_segments=profile.max_events,
+            max_ocr_frames=profile.max_ocr_frames,
+            ocr_dir=ocr_dir,
+            ambiguous_reviews=profile.ambiguous_boundary_reviews,
+            model=base_meta.get("cost_estimate", {}).get("model") or estimate_job_cost(profile)["model"],
+        )
+        _write_json(artifacts_dir / "frame_metrics.json", segmentation["frame_metrics"])
+        _write_json(artifacts_dir / "boundary_candidates.json", segmentation["boundary_candidates"])
+        _write_json(artifacts_dir / "screen_states.json", segmentation["screen_states"])
+        _write_json(artifacts_dir / "event_segments.json", segmentation["event_segments"])
+        _write_json(artifacts_dir / "ocr_raw.json", segmentation["ocr_results"])
+        _write_json(artifacts_dir / "events.json", segmentation["event_segments"])
+        _write_text(artifacts_dir / "segmentation_report.md", segmentation_report(segmentation))
+        events = segmentation["event_segments"]
 
-        update_job(db_path, job_id, progress=0.34, message="Running OCR")
-        ocr_results = run_ocr(selected, max_frames=profile.max_ocr_frames, ocr_dir=ocr_dir)
-        _write_json(artifacts_dir / "ocr_raw.json", ocr_results)
+        reserved_gpt_calls = 1 + (1 if profile.ambiguous_boundary_reviews > 0 else 0)
+        generation_call_budget = max(1, profile.max_gpt_calls - reserved_gpt_calls)
 
-        update_job(db_path, job_id, progress=0.45, message="Cleaning OCR and classifying systems")
-        cleaned = clean_ocr_results(ocr_results)
-        classified = classify_events(cleaned)
-        _write_json(artifacts_dir / "classified.json", classified)
-
-        update_job(db_path, job_id, progress=0.56, message="Clustering and pruning candidate events")
-        clustered = cluster_events(classified, target_max=60)
-        events = prune_events(clustered, max_events=profile.max_events)
-        _write_json(artifacts_dir / "events.json", events)
-
-        update_job(db_path, job_id, progress=0.68, message="Generating SOP steps")
+        update_job(db_path, job_id, progress=0.68, message="Generating SOP steps from segments")
         steps = generate_steps(
             events,
             batch_size=profile.batch_size,
-            max_calls=max(1, profile.max_gpt_calls - 1),
+            max_calls=generation_call_budget,
             include_context_images=profile.include_context_images,
         )
         _write_json(artifacts_dir / "steps_generated.json", steps)
@@ -111,8 +116,15 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                     "steps": len(valid_steps),
                     "events": len(events),
                     "frames": len(frames),
-                    "selected_frames": len(selected),
-                    "ocr_frames": len(ocr_results),
+                    "screen_states": len(segmentation.get("screen_states", [])),
+                    "boundary_candidates": len(segmentation.get("boundary_candidates", [])),
+                    "ocr_frames": len(segmentation.get("ocr_results", [])),
+                    "segmentation": {
+                        "screen_states": len(segmentation.get("screen_states", [])),
+                        "boundary_candidates": len(segmentation.get("boundary_candidates", [])),
+                        "event_segments": len(events),
+                        "threshold": segmentation.get("threshold_info", {}).get("threshold"),
+                    },
                     "cost_estimate": estimate_job_cost(profile),
                 }
             ),
@@ -131,8 +143,15 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                     "steps": len(valid_steps),
                     "events": len(events),
                     "frames": len(frames),
-                    "selected_frames": len(selected),
-                    "ocr_frames": len(ocr_results),
+                    "screen_states": len(segmentation.get("screen_states", [])),
+                    "boundary_candidates": len(segmentation.get("boundary_candidates", [])),
+                    "ocr_frames": len(segmentation.get("ocr_results", [])),
+                    "segmentation": {
+                        "screen_states": len(segmentation.get("screen_states", [])),
+                        "boundary_candidates": len(segmentation.get("boundary_candidates", [])),
+                        "event_segments": len(events),
+                        "threshold": segmentation.get("threshold_info", {}).get("threshold"),
+                    },
                     "warnings": warnings,
                     "cost_estimate": estimate_job_cost(profile),
                 }

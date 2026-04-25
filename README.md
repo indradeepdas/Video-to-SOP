@@ -2,7 +2,7 @@
 
 Video2SOP is a local Streamlit application that turns a screen recording into a screenshot-backed SOP DOCX. It is designed for business process recordings, not general video analysis.
 
-The app samples frames, detects meaningful screen changes, runs OCR when available, classifies systems such as SAP and Excel, asks OpenAI for conservative SOP wording when configured, verifies risky steps, and exports a Word document with screenshots and confidence indicators.
+The app samples frames, detects adaptive screen-state boundaries, runs OCR when available, classifies systems such as SAP and Excel, asks OpenAI for conservative SOP wording when configured, verifies risky steps, and exports a Word document with screenshots and confidence indicators.
 
 ## What It Produces
 
@@ -86,7 +86,7 @@ http://localhost:8501
 
 ## Quality Profiles
 
-- `Balanced`: default. Max 80 selected frames, 60 OCR frames, 40 final steps, and 6 GPT calls.
+- `Balanced`: default. 1-second local metric pass, max 60 OCR frames, 40 final steps, and 6 GPT calls.
 - `Lowest cost`: fewer frames, fewer events, and fewer verification rows.
 - `Highest accuracy`: more local evidence and more GPT context, still capped to avoid uncontrolled spend.
 
@@ -106,6 +106,7 @@ Important files:
 - `frames/`: sampled screenshots.
 - `ocr/`: preprocessed OCR images when Tesseract is available.
 - `artifacts/*.json`: pipeline evidence and intermediate outputs.
+- `artifacts/segmentation_report.md`: adaptive boundary and screen-state diagnostics.
 - `sop.docx`: final SOP.
 
 ## Documentation

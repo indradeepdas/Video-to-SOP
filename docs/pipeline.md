@@ -1,6 +1,6 @@
 # Pipeline Details
 
-The pipeline is optimized for business SOP generation. It deliberately avoids trying to understand every video frame.
+The pipeline is optimized for business SOP generation. It deliberately avoids trying to understand every pixel of every frame; instead it detects stable screen states and converts those states into evidence-backed task steps.
 
 ## 1. Upload
 
@@ -12,35 +12,51 @@ jobs/{job_id}/input.mp4
 
 The job record stores process name, department/system notes, target audience, selected quality profile, and cost estimate.
 
-## 2. Frame Extraction
+## 2. Dense Frame Metrics
 
-OpenCV samples the video at the profile interval. Balanced mode samples every 4.5 seconds and caps extraction at 850 frames.
+OpenCV samples the video for local boundary detection. Balanced mode uses a 1 second metric interval and caps metric frames at 2800.
 
-Each frame stores:
+Each metric frame stores:
 
 - `frame_id`
 - `time_sec`
 - `path`
-- image dimensions
+- dimensions
 - grayscale visual `diff_score`
 - perceptual `image_hash`
 
 Frames are resized to a maximum width of 1280 pixels.
 
-## 3. Representative Selection
+## 3. Adaptive Boundary Detection
 
-Selection keeps first and last frames, then combines:
+The segmentation engine computes a boundary score between adjacent sampled frames using:
 
-- evenly spaced frames
-- high-change frames
-- duplicate rejection by perceptual hash
-- minimum time gap enforcement
+- pixel absolute difference
+- SSIM structural change
+- edge-map change
+- perceptual hash distance
 
-Balanced mode selects at most 80 frames.
+It then computes median/MAD and percentile thresholds for each video. Hysteresis prevents a noisy moment from producing multiple adjacent task boundaries.
 
-## 4. OCR
+## 4. Screen-State Segmentation
 
-OCR is capped by profile. Balanced mode runs OCR on at most 60 frames.
+Boundary candidates are converted into `EventSegment` objects. Each segment stores:
+
+- `start_time_sec`
+- `end_time_sec`
+- `before_frame`
+- `entry_frame`
+- `stable_frame`
+- `after_frame`
+- `boundary_score`
+- `screen_state_id`
+- `confidence_components`
+
+Screen states combine system class, perceptual hash, OCR tokens, and boundary evidence after enrichment. Recurring screens can reappear later without being globally removed as duplicates.
+
+## 5. OCR
+
+OCR is capped by profile. Balanced mode runs OCR on at most 60 segment evidence frames.
 
 When Tesseract is available:
 
@@ -48,9 +64,9 @@ When Tesseract is available:
 - text is extracted with two fast page segmentation modes
 - the longer result is kept
 
-When Tesseract is unavailable, the step records `ocr_available: false` and continues.
+When Tesseract is unavailable, the job continues. Segment confidence will usually be lower when both OCR and model vision evidence are weak.
 
-## 5. OCR Cleaning
+## 6. OCR Cleaning
 
 Cleaning removes common UI noise:
 
@@ -62,7 +78,7 @@ Cleaning removes common UI noise:
 
 It keeps business terms such as supplier, invoice, payment, posting, Excel, export, status, account, tax, and reconciliation.
 
-## 6. System Classification
+## 7. System Classification
 
 Classification is rule-based for speed and cost control.
 
@@ -77,53 +93,46 @@ Supported systems:
 - File Explorer
 - Other
 
-The model can still override wording, but validation prevents obvious SAP/Excel mismatches when local evidence is stronger.
+The model can still improve wording, but validation prevents obvious SAP/Excel mismatches when local evidence is stronger.
 
-## 7. Event Clustering
+## 8. OCR/System Segment Enrichment
 
-The clustering stage merges near-duplicate adjacent frames and rejects scroll-only noise. It preserves system transitions, even if OCR is weak.
+OCR text is attached back to each segment. Boundary scores are enriched with:
 
-Each event stores:
-
-- `before_frame`
-- `evidence_frame`
-- `after_frame`
-- `start_time_sec`
-- `end_time_sec`
-- visual change score
-- OCR text
-- system guess
-- local `action_hint`
+- OCR text delta
+- system transition
+- local action hint
+- original visual boundary score
 
 Action hints include filter, export, data entry, review, post/save, and navigation.
 
-## 8. Event Pruning
+## 9. Scroll Collapse And Event Pruning
 
-Events are scored using:
+Scroll-only segments are collapsed when they have the same system, similar OCR, and weak boundary evidence. Empty OCR is not allowed to create false similarity by itself.
 
-- business action terms
-- visual change
-- system classification
-- text richness
-- system transitions
-- action hints
+Balanced mode keeps at most 40 final event segments.
 
-Balanced mode keeps at most 40 candidate events.
+## 10. Optional Ambiguous-Boundary Review
 
-## 9. SOP Generation
+Balanced and Highest accuracy profiles can send a capped set of uncertain adjacent segment pairs to GPT vision. GPT may mark a pair as `keep` or `merge`.
 
-Events are sent to GPT in compact batches. Balanced mode uses batches of 9 and caps total GPT calls at 6.
+This happens only after local segmentation and pruning. It is not the primary video segmentation engine.
+
+## 11. SOP Generation
+
+Event segments are sent to GPT in compact batches. Balanced mode uses batches of 9 and caps total GPT calls at 6, reserving budget for ambiguous-boundary review and risky-step verification.
 
 The prompt instructs the model to:
 
-- only describe visible evidence
+- treat each event as one possible SOP step
+- use stable segment evidence first
 - avoid hallucinated clicks or values
 - use generic actions when uncertain
 - return JSON only
 
 If the model fails or returns invalid JSON, the batch falls back to local step wording.
 
-## 10. Risk Verification
+## 12. Risk Verification
 
 Risk rules flag steps when:
 
@@ -134,7 +143,7 @@ Risk rules flag steps when:
 
 Only capped risky rows are verified. Verification includes screenshot evidence where available.
 
-## 11. Validation
+## 13. Validation
 
 Validation enforces:
 
@@ -146,7 +155,7 @@ Validation enforces:
 
 The app does not create fake steps to reach a minimum count.
 
-## 12. Phase Grouping
+## 14. Phase Grouping
 
 Steps are grouped into:
 
@@ -158,7 +167,7 @@ Steps are grouped into:
 
 Grouping is rule-based and uses system plus action text.
 
-## 13. DOCX Export
+## 15. DOCX Export
 
 The final DOCX includes:
 
@@ -168,7 +177,7 @@ The final DOCX includes:
 - assumptions
 - evidence warnings
 - phase-grouped steps
-- screenshots
+- screenshots with segment timestamp range
 - confidence indicators
 - low-confidence review checklist
 - job metadata appendix

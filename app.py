@@ -115,6 +115,15 @@ def main() -> None:
                         )
                     meta = job.get("meta") or {}
                     st.write(f"Steps: {meta.get('steps', 'unknown')}")
+                    segmentation = meta.get("segmentation") or {}
+                    if segmentation:
+                        diag_cols = st.columns(3)
+                        diag_cols[0].metric("Screen states", segmentation.get("screen_states", "unknown"))
+                        diag_cols[1].metric("Boundary candidates", segmentation.get("boundary_candidates", "unknown"))
+                        diag_cols[2].metric("Event segments", segmentation.get("event_segments", "unknown"))
+                        threshold = segmentation.get("threshold")
+                        if threshold is not None:
+                            st.caption(f"Adaptive boundary threshold: {float(threshold):.4f}")
                     if meta.get("warnings"):
                         st.warning(" ".join(meta["warnings"]))
             elif status == "failed":

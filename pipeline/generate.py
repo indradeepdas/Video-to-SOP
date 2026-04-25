@@ -9,14 +9,17 @@ from pathlib import Path
 from typing import Any
 
 
-GENERATION_PROMPT = """You generate business SOP steps from screen-recording evidence.
+GENERATION_PROMPT = """You generate business SOP steps from segmented screen-recording evidence.
 
 Rules:
+- Treat one event_id as one possible SOP step produced by the segmentation engine.
 - Do not hallucinate clicks, typed values, names, or outcomes.
-- Only describe what is visible in screenshots and OCR.
+- Only describe what is visible in segment screenshots and OCR.
+- Use stable_frame evidence first; before/after frames only provide context.
 - If uncertain, use conservative generic actions like Open, Display, Apply filter, Review, Export, or Save.
 - Use business process language, not toolbar or menu noise.
 - Keep each action concise and usable by a new employee.
+- You may make a step generic or low confidence, but do not invent missing business actions.
 - Return only valid JSON matching this shape:
 [
   {
@@ -86,6 +89,8 @@ def _call_openai(
                 "system_rule_guess": event.get("system", "Other"),
                 "action_hint": event.get("action_hint", "review"),
                 "diff_score": round(float(event.get("diff_score", 0)), 4),
+                "boundary_score": round(float(event.get("boundary_score", 0)), 4),
+                "screen_state_id": event.get("screen_state_id"),
                 "ocr": (event.get("clean_text") or "")[:1200],
             }
         )
@@ -212,6 +217,9 @@ def generate_steps(
                     "time_sec": event.get("time_sec", 0),
                     "start_time_sec": event.get("start_time_sec", event.get("time_sec", 0)),
                     "end_time_sec": event.get("end_time_sec", event.get("time_sec", 0)),
+                    "boundary_score": event.get("boundary_score", 0),
+                    "screen_state_id": event.get("screen_state_id"),
+                    "confidence_components": event.get("confidence_components", {}),
                     "action_hint": event.get("action_hint", "review"),
                     "rule_system": event.get("system", "Other"),
                 }

@@ -15,6 +15,20 @@ def _add_kv(paragraph, label: str, value: str) -> None:
     paragraph.add_run(value)
 
 
+def _confidence_reason(step: dict[str, Any]) -> str:
+    components = step.get("confidence_components") or {}
+    reasons = []
+    if step.get("confidence") != "high":
+        reasons.append("model or local evidence was not high confidence")
+    if step.get("risky"):
+        reasons.append("risk filter flagged the wording for review")
+    if float(components.get("text_delta", 0) or 0) > 0.6:
+        reasons.append("OCR changed substantially around this segment")
+    if float(components.get("visual", 0) or 0) < 0.04:
+        reasons.append("visual boundary evidence was weak")
+    return "; ".join(reasons) or "evidence appears consistent"
+
+
 def export_docx(
     process_name: str,
     phases: dict[str, list[dict[str, Any]]],
@@ -83,7 +97,10 @@ def export_docx(
 
             screenshot = step.get("screenshot")
             if screenshot and Path(screenshot).exists():
-                document.add_paragraph("Screenshot:")
+                start = float(step.get("start_time_sec", step.get("time_sec", 0)) or 0)
+                end = float(step.get("end_time_sec", step.get("time_sec", 0)) or 0)
+                state = step.get("screen_state_id", "unknown")
+                document.add_paragraph(f"Screenshot evidence: {start:.1f}s-{end:.1f}s, screen state {state}")
                 try:
                     document.add_picture(str(screenshot), width=Inches(6.2))
                 except Exception:
@@ -102,7 +119,8 @@ def export_docx(
     if low_confidence:
         for step in low_confidence:
             document.add_paragraph(
-                f"Step {step.get('step_number')}: review the screenshot and confirm the action/output wording."
+                f"Step {step.get('step_number')}: review the screenshot and confirm the action/output wording "
+                f"({_confidence_reason(step)})."
             )
     else:
         document.add_paragraph("No low-confidence steps were identified.")

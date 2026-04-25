@@ -24,6 +24,8 @@ Profiles are defined in `pipeline/config.py`.
 Default profile for hobbyist use:
 
 - 4.5 second frame interval
+- 1 second metric interval
+- 2800 metric frame cap
 - 850 extracted frame cap
 - 80 selected frame cap
 - 60 OCR frame cap
@@ -32,6 +34,7 @@ Default profile for hobbyist use:
 - 9 events per generation batch
 - 6 GPT call cap
 - 24 risky verification rows
+- 8 ambiguous boundary reviews
 
 ### Lowest cost
 

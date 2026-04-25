@@ -8,11 +8,11 @@ Video2SOP is a local single-user application. It keeps all uploaded videos, extr
 flowchart LR
     A["Streamlit upload"] --> B["SQLite job record"]
     B --> C["Worker thread"]
-    C --> D["Frame extraction"]
-    D --> E["Representative frame selection"]
-    E --> F["OCR and cleaning"]
-    F --> G["System classification"]
-    G --> H["Event clustering and pruning"]
+    C --> D["Dense frame metrics"]
+    D --> E["Adaptive boundary detection"]
+    E --> F["Screen-state segmentation"]
+    F --> G["OCR and system enrichment"]
+    G --> H["Segment pruning and review"]
     H --> I["GPT generation or local fallback"]
     I --> J["Risk verification"]
     J --> K["Validation and phase grouping"]
@@ -26,6 +26,7 @@ flowchart LR
 - `storage/jobs.py`: SQLite job creation, updates, and listing.
 - `pipeline/config.py`: Quality profiles, model defaults, and rough cost estimation.
 - `pipeline/video.py`: Frame extraction, visual diff scoring, image hashes, and representative selection.
+- `pipeline/segmentation.py`: SSIM/hash/edge/pixel metrics, adaptive boundaries, screen states, scroll collapse, and segment artifacts.
 - `pipeline/ocr.py`: OCR preprocessing and Tesseract execution with graceful fallback.
 - `pipeline/cluster.py`: Candidate event creation, duplicate filtering, action hints, and screenshot context.
 - `pipeline/generate.py`: Batched GPT step generation with local fallback.
@@ -43,9 +44,12 @@ jobs/{job_id}/
   ocr/
   artifacts/
     frames.json
-    selected_frames.json
+    frame_metrics.json
+    boundary_candidates.json
+    screen_states.json
+    event_segments.json
+    segmentation_report.md
     ocr_raw.json
-    classified.json
     events.json
     steps_generated.json
     steps_final.json
