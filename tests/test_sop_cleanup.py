@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from pipeline.sop_cleanup import clean_sop_steps
+from pipeline.sop_cleanup import clean_sop_steps, validate_chronological_order
 
 
 def step(number: int, action: str, expected: str = "The expected screen is displayed.", **extra):
@@ -14,6 +14,7 @@ def step(number: int, action: str, expected: str = "The expected screen is displ
         "confidence": extra.pop("confidence", "high"),
         "screenshot": extra.pop("screenshot", f"screenshots/step_{number}.jpg"),
         "time_sec": float(number * 5),
+        "source_event_index": number,
     }
     data.update(extra)
     return data
@@ -159,6 +160,94 @@ class SopCleanupTests(unittest.TestCase):
             ]
         )
         self.assertEqual(result["steps"][0]["screenshot"], "b.png")
+
+    def test_validate_chronological_order_reports_violations(self) -> None:
+        report = validate_chronological_order(
+            [
+                step(1, "Open the app.", start_time_seconds=20),
+                step(2, "Search for the customer.", start_time_seconds=10),
+            ]
+        )
+        self.assertFalse(report["is_chronological"])
+        self.assertEqual(len(report["violations"]), 1)
+
+    def test_cleanup_preserves_chronological_order_after_phase_assignment(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(1, "Submit the customer update.", system="Browser", start_time_seconds=30),
+                step(2, "Open the customer web app.", system="Browser", start_time_seconds=0),
+                step(3, "Search for the customer record.", system="Browser", start_time_seconds=10),
+            ]
+        )
+        actions = [item["action"] for item in result["steps"]]
+        self.assertEqual(actions[0], "Open the customer web app.")
+        self.assertEqual(actions[-1], "Submit the customer update.")
+        self.assertTrue(result["quality_report"]["chronological_order_valid"])
+        self.assertEqual(result["quality_report"]["chronological_violations_count"], 1)
+
+    def test_phase_headers_can_repeat_in_timeline_order(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(1, "Open the customer web app.", system="Browser", start_time_seconds=0),
+                step(2, "Update the customer status field.", system="Browser", start_time_seconds=10),
+                step(3, "Validate that the update appears on the customer record.", system="Browser", start_time_seconds=20),
+                step(4, "Update the customer priority field.", system="Browser", start_time_seconds=30),
+            ]
+        )
+        self.assertEqual(
+            result["phase_summary"]["phase_order"],
+            ["Navigate to record", "Update fields", "Validate result", "Update fields"],
+        )
+
+    def test_steps_are_not_moved_to_group_similar_phase_labels(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(1, "Open the customer web app.", system="Browser", start_time_seconds=0),
+                step(2, "Update the customer status field.", system="Browser", start_time_seconds=10),
+                step(3, "Validate that the update appears on the customer record.", system="Browser", start_time_seconds=20),
+                step(4, "Update the customer priority field.", system="Browser", start_time_seconds=30),
+            ]
+        )
+        self.assertEqual([item["original_step_number"] for item in result["steps"]], [1, 2, 3, 4])
+
+    def test_merging_uses_time_and_context_not_fixed_step_numbers(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(10, "Open the report page.", system="Browser", start_time_seconds=0),
+                step(20, "Open the report page.", system="Browser", start_time_seconds=8),
+                step(30, "Export the report.", system="Browser", start_time_seconds=70),
+            ]
+        )
+        self.assertEqual(len(result["merged_steps"]), 1)
+        self.assertEqual(result["merged_steps"][0]["source_step_numbers"], [10, 20])
+
+    def test_generic_non_excel_workflow_cleanup(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(1, "Open the customer web app.", system="Browser", start_time_seconds=0),
+                step(2, "Search for the customer record.", system="Browser", start_time_seconds=10),
+                step(3, "Update the customer status field.", system="Browser", start_time_seconds=20),
+                step(4, "Submit the changes.", system="Browser", start_time_seconds=30),
+                step(5, "Validate that the confirmation message appears.", system="Browser", start_time_seconds=40),
+                step(6, "Export the customer report.", system="Browser", start_time_seconds=50),
+                step(7, "Review the presenter outro screen.", system="Browser", start_time_seconds=60),
+            ]
+        )
+        self.assertEqual([item["original_step_number"] for item in result["steps"]], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(result["removed_steps"][0]["original_step_number"], 7)
+        self.assertIn("Navigate to record", result["phase_summary"]["phase_order"])
+        self.assertIn("Validate result", result["phase_summary"]["phase_order"])
+        self.assertIn("Export, save, or close process", result["phase_summary"]["phase_order"])
+
+    def test_business_validation_review_steps_are_preserved(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(1, "Confirm that the invoice status changed to Posted.", system="SAP"),
+                step(2, "Review the visible process screen.", system="SAP"),
+            ]
+        )
+        self.assertEqual(len(result["steps"]), 1)
+        self.assertEqual(result["steps"][0]["original_step_number"], 1)
 
 
 if __name__ == "__main__":

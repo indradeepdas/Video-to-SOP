@@ -163,7 +163,9 @@ It removes obvious non-operational noise such as presenter outros, social banner
 
 Adjacent same-intent steps are merged conservatively when they have the same system, overlapping output, close evidence timing, and high token similarity. Distinct operational steps such as adding different PivotTable fields are preserved.
 
-The cleanup stage assigns deterministic business phases, writes a quality score, and marks readiness as `demo_ready`, `needs_review`, or `not_ready`.
+The cleanup stage preserves chronological order above phase neatness. It assigns a phase label per step, then renders phase headers only when the phase changes in the timeline. If a workflow returns to an earlier phase type later, that phase header appears again instead of moving later steps upward.
+
+The cleanup stage validates chronology, repairs ordering when metadata shows a violation, writes a quality score, and marks readiness as `demo_ready`, `needs_review`, or `not_ready`.
 
 Artifacts:
 

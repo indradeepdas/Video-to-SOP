@@ -31,7 +31,7 @@ def _confidence_reason(step: dict[str, Any]) -> str:
 
 def export_docx(
     process_name: str,
-    phases: dict[str, list[dict[str, Any]]],
+    phases: dict[str, list[dict[str, Any]]] | list[dict[str, Any]],
     output_path: str | Path,
     summary: str | None = None,
     target_audience: str = "New employee",
@@ -52,7 +52,12 @@ def export_docx(
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     document.add_heading("1. Summary", level=1)
-    step_count = sum(len(items) for items in phases.values())
+    if isinstance(phases, list):
+        phase_sections = [(section.get("phase", "Review and validate"), section.get("steps", [])) for section in phases]
+    else:
+        phase_sections = list(phases.items())
+
+    step_count = sum(len(items) for _, items in phase_sections)
     if summary:
         document.add_paragraph(summary)
     else:
@@ -80,7 +85,7 @@ def export_docx(
             document.add_paragraph(warning, style=None)
 
     document.add_heading("2. Steps grouped by phases", level=1)
-    for phase_name, steps in phases.items():
+    for phase_name, steps in phase_sections:
         document.add_heading(phase_name, level=2)
         for step in steps:
             document.add_heading(f"Step {step['step_number']}", level=3)
@@ -115,7 +120,7 @@ def export_docx(
     document.add_paragraph("Medium: the action is likely based on visible context but may be generalized.")
     document.add_paragraph("Low: evidence is limited; review the screenshot before using the step operationally.")
 
-    low_confidence = [step for steps in phases.values() for step in steps if step.get("confidence") != "high"]
+    low_confidence = [step for _, steps in phase_sections for step in steps if step.get("confidence") != "high"]
     document.add_heading("Low-confidence review checklist", level=1)
     if low_confidence:
         for step in low_confidence:
@@ -143,6 +148,8 @@ def export_docx(
         document.add_paragraph(f"Cleaned step count: {quality.get('step_count_after', 'unknown')}")
         document.add_paragraph(f"Removed steps: {quality.get('removed_count', 0)}")
         document.add_paragraph(f"Merged steps: {quality.get('merged_count', 0)}")
+        document.add_paragraph(f"Chronological order valid: {quality.get('chronological_order_valid', 'unknown')}")
+        document.add_paragraph(f"Chronological violations: {quality.get('chronological_violations_count', 'unknown')}")
         document.add_paragraph(f"Quality score: {quality.get('quality_score', 'unknown')}")
         document.add_paragraph(f"Readiness: {quality.get('readiness', 'unknown')}")
         for warning in quality.get("warnings", []) or []:

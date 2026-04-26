@@ -54,11 +54,15 @@ def validate_steps(steps: list[dict[str, Any]], max_steps: int = 40) -> list[dic
 def group_phases(steps: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     explicit_phases = [step.get("phase") for step in steps if step.get("phase")]
     if explicit_phases:
-        grouped: dict[str, list[dict[str, Any]]] = {}
+        sections: list[dict[str, Any]] = []
+        current_phase = None
         for step in steps:
             phase = step.get("phase") or "Review and validate"
-            grouped.setdefault(phase, []).append(step)
-        return grouped
+            if phase != current_phase:
+                sections.append({"phase": phase, "steps": []})
+                current_phase = phase
+            sections[-1]["steps"].append(step)
+        return sections
 
     phases = {
         "Access system": [],

@@ -11,6 +11,7 @@ The generated DOCX includes:
 - SOP title based on the process name.
 - Summary, prerequisites, and assumptions.
 - Phase-grouped steps.
+- Chronological phase sections that preserve process order.
 - Screenshot evidence for each step.
 - System, action, expected output, and confidence for each step.
 - Low-confidence review checklist.

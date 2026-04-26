@@ -128,6 +128,7 @@ VALIDATION_OUTPUT_TERMS = {
 }
 
 GENERIC_PHASES = {"Process in Excel", "Validate"}
+TIME_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*s")
 
 
 def _text(step: dict[str, Any]) -> str:
@@ -217,9 +218,91 @@ def _sequence_number(step: dict[str, Any]) -> int:
         return 0
 
 
+def _infer_seconds_from_text(value: Any) -> float | None:
+    if not isinstance(value, str):
+        return None
+    match = TIME_PATTERN.search(value)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except Exception:
+        return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return _infer_seconds_from_text(value)
+
+
+def _ordering_value(step: dict[str, Any]) -> tuple[int, float]:
+    start = _coerce_float(step.get("start_time_seconds"))
+    if start is None:
+        start = _coerce_float(step.get("start_time_sec"))
+    if start is None:
+        start = _coerce_float(step.get("time_sec"))
+    if start is not None:
+        return (0, start)
+    event = step.get("source_event_index")
+    if event is None:
+        event = step.get("event_id")
+    try:
+        return (1, float(event))
+    except Exception:
+        return (2, float(_sequence_number(step)))
+
+
+def _normalize_ordering_metadata(step: dict[str, Any], fallback_number: int) -> dict[str, Any]:
+    out = dict(step)
+    out["original_step_number"] = out.get("original_step_number") or out.get("step_number") or fallback_number
+    out["source_event_index"] = out.get("source_event_index") or out.get("event_id")
+    start = _coerce_float(out.get("start_time_seconds"))
+    if start is None:
+        start = _coerce_float(out.get("start_time_sec"))
+    if start is None:
+        start = _coerce_float(out.get("time_sec"))
+    if start is None:
+        start = _infer_seconds_from_text(out.get("screenshot", ""))
+    end = _coerce_float(out.get("end_time_seconds"))
+    if end is None:
+        end = _coerce_float(out.get("end_time_sec"))
+    if end is None:
+        end = start
+    if start is not None:
+        out["start_time_seconds"] = start
+    if end is not None:
+        out["end_time_seconds"] = end
+    out["screen_state"] = out.get("screen_state") or out.get("screen_state_id")
+    return out
+
+
+def validate_chronological_order(steps: list[dict]) -> dict:
+    violations = []
+    previous_key: tuple[int, float] | None = None
+    previous_step = None
+    for step in steps:
+        key = _ordering_value(step)
+        if previous_key is not None and key < previous_key:
+            violations.append(
+                {
+                    "previous_step_number": previous_step.get("step_number") if previous_step else None,
+                    "current_step_number": step.get("step_number"),
+                    "previous_order": previous_key,
+                    "current_order": key,
+                }
+            )
+        previous_key = key
+        previous_step = step
+    return {"is_chronological": not violations, "violations": violations}
+
+
 def _time_distance(left: dict[str, Any], right: dict[str, Any]) -> float:
-    left_time = left.get("time_sec", left.get("end_time_sec", 0)) or 0
-    right_time = right.get("time_sec", right.get("start_time_sec", 0)) or 0
+    left_time = left.get("end_time_seconds", left.get("end_time_sec", left.get("time_sec", 0))) or 0
+    right_time = right.get("start_time_seconds", right.get("start_time_sec", right.get("time_sec", 0))) or 0
     try:
         return abs(float(right_time) - float(left_time))
     except Exception:
@@ -238,6 +321,31 @@ def _same_workflow_intent(left: dict[str, Any], right: dict[str, Any]) -> bool:
     if "review the worksheet data" in left_text and "review the sales data table" in right_text:
         return True
     return _jaccard(_text(left), _text(right)) > 0.72
+
+
+def _target_tokens(step: dict[str, Any]) -> set[str]:
+    tokens = _tokens(_text(step))
+    domain_terms = {
+        "customer",
+        "invoice",
+        "order",
+        "record",
+        "report",
+        "field",
+        "status",
+        "region",
+        "salesperson",
+        "amount",
+        "pivottable",
+        "pivotchart",
+        "slicer",
+        "table",
+        "workbook",
+        "document",
+        "transaction",
+        "posting",
+    }
+    return tokens & domain_terms
 
 
 def _distinct_pivot_field_operations(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -260,6 +368,10 @@ def _is_duplicate_candidate(left: dict[str, Any], right: dict[str, Any]) -> bool
     close_in_sequence = number_gap <= 2
     close_in_time = _time_distance(left, right) <= 45
     if not (close_in_sequence or close_in_time):
+        return False
+    left_targets = _target_tokens(left)
+    right_targets = _target_tokens(right)
+    if left_targets and right_targets and not (left_targets & right_targets):
         return False
     expected_overlap = _jaccard(str(left.get("expected_output", "")), str(right.get("expected_output", ""))) > 0.45
     return _same_workflow_intent(left, right) or expected_overlap and _jaccard(_text(left), _text(right)) > 0.55
@@ -317,6 +429,26 @@ def _merge_pair(left: dict[str, Any], right: dict[str, Any]) -> tuple[dict[str, 
 def _phase_for_step(step: dict[str, Any], pivot_workflow: bool) -> str:
     text = _normalize(_text(step))
     system = step.get("system", "")
+    if system == "SAP":
+        if any(term in text for term in ["open", "display", "transaction", "access"]):
+            return "Open transaction"
+        if any(term in text for term in ["enter", "document", "invoice", "field", "data"]):
+            return "Enter document data"
+        if any(term in text for term in ["validate", "verify", "confirm", "check"]):
+            return "Validate posting"
+        if any(term in text for term in ["save", "post", "submit"]):
+            return "Save or post document"
+    if system == "Browser":
+        if any(term in text for term in ["export", "download", "report"]):
+            return "Export, save, or close process"
+        if any(term in text for term in ["validate", "verify", "confirm", "appears", "confirmation"]):
+            return "Validate result"
+        if any(term in text for term in ["submit", "save", "apply"]):
+            return "Submit changes"
+        if any(term in text for term in ["update", "enter", "field", "edit", "change"]):
+            return "Update fields"
+        if any(term in text for term in ["open", "navigate", "search", "record", "customer"]):
+            return "Navigate to record"
     if pivot_workflow or system == "Excel":
         if any(term in text for term in ["workbook", "source data", "sales data", "worksheet data", "data range", "header row"]):
             return "Prepare source data"
@@ -333,30 +465,36 @@ def _phase_for_step(step: dict[str, Any], pivot_workflow: bool) -> str:
         if any(term in text for term in ["validate", "verify", "confirm", "final", "summarized"]):
             return "Validate final output"
         return "Prepare source data"
-    if any(term in text for term in ["open", "display", "log in", "access"]):
-        return "Open process"
+    if any(term in text for term in ["open", "display", "log in", "access", "navigate", "search"]):
+        return "Open or access process"
     if any(term in text for term in ["prepare", "select", "enter", "upload", "input"]):
-        return "Prepare input"
+        return "Prepare input data"
     if any(term in text for term in ["submit", "post", "approve", "reject", "execute", "save"]):
-        return "Execute transaction"
-    if any(term in text for term in ["configure", "setting", "filter", "choose", "apply"]):
-        return "Configure settings"
-    if any(term in text for term in ["export", "download", "generate"]):
-        return "Export or save output"
+        return "Execute main action"
+    if any(term in text for term in ["configure", "setting", "filter", "choose", "apply", "field", "update"]):
+        return "Configure records or fields"
+    if any(term in text for term in ["export", "download", "generate", "close"]):
+        return "Export, save, or close process"
     return "Review and validate"
 
 
 def _apply_phases(steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     pivot_workflow = any("pivottable" in _normalize(_text(step)) or "pivotchart" in _normalize(_text(step)) for step in steps)
     phase_counts: OrderedDict[str, int] = OrderedDict()
+    timeline_sections = []
+    current_phase = None
     phased = []
     for step in steps:
         phase = _phase_for_step(step, pivot_workflow)
         phase_counts[phase] = phase_counts.get(phase, 0) + 1
+        if phase != current_phase:
+            timeline_sections.append({"phase": phase, "start_step_number": step.get("step_number")})
+            current_phase = phase
         phased.append({**step, "phase": phase})
     return phased, {
         "phase_counts": dict(phase_counts),
-        "phase_order": list(phase_counts.keys()),
+        "phase_order": [section["phase"] for section in timeline_sections],
+        "timeline_sections": timeline_sections,
         "workflow_type": "excel_pivottable" if pivot_workflow else "generic",
     }
 
@@ -378,6 +516,8 @@ def _quality_report(
     removed_steps: list[dict[str, Any]],
     merged_steps: list[dict[str, Any]],
     warnings: list[str],
+    chronological_report: dict[str, Any],
+    chronology_repaired: bool,
 ) -> dict[str, Any]:
     noise_count, passive_count, duplicate_count = _remaining_counts(steps)
     low_confidence_count = sum(1 for step in steps if step.get("confidence") != "high")
@@ -393,13 +533,19 @@ def _quality_report(
         score -= 10
     if steps and low_confidence_count / len(steps) > 0.25:
         score -= 10
+    chronological_valid = chronological_report.get("is_chronological", True)
+    chronological_violations_count = len(chronological_report.get("violations", []))
+    if chronological_violations_count:
+        score -= 20
     phase_names = {step.get("phase") for step in steps if step.get("phase")}
     if len(phase_names) == 1 and next(iter(phase_names), "") in GENERIC_PHASES:
         score -= 5
     if generic_phase_count == len(steps) and steps:
         score -= 5
     score = max(0, min(100, score))
-    if score >= 80 and noise_count == 0:
+    if score >= 80 and noise_count == 0 and chronological_valid:
+        readiness = "demo_ready"
+    elif score >= 80 and noise_count == 0 and chronology_repaired:
         readiness = "demo_ready"
     elif score >= 60:
         readiness = "needs_review"
@@ -414,6 +560,8 @@ def _quality_report(
         "passive_step_count": passive_count,
         "noise_step_count": noise_count,
         "duplicate_candidate_count": duplicate_count,
+        "chronological_order_valid": chronological_valid or chronology_repaired,
+        "chronological_violations_count": chronological_violations_count,
         "quality_score": score,
         "readiness": readiness,
         "warnings": warnings,
@@ -425,13 +573,11 @@ def clean_sop_steps(
     metadata: dict | None = None,
     max_steps: int | None = None,
 ) -> dict:
-    original = [
-        {
-            **step,
-            "original_step_number": step.get("original_step_number") or step.get("step_number") or index + 1,
-        }
-        for index, step in enumerate(steps)
-    ]
+    original = [_normalize_ordering_metadata(step, index + 1) for index, step in enumerate(steps)]
+    initial_chronology = validate_chronological_order(original)
+    if not initial_chronology["is_chronological"]:
+        original = sorted(original, key=_ordering_value)
+    chronology_repaired = not initial_chronology["is_chronological"]
     hard_removed: list[dict[str, Any]] = []
     borderline_removed: list[dict[str, Any]] = []
     kept: list[dict[str, Any]] = []
@@ -454,6 +600,8 @@ def clean_sop_steps(
     candidate_removed = hard_removed + borderline_removed
     reduction_ratio = len(candidate_removed) / max(1, len(original))
     warnings: list[str] = []
+    if chronology_repaired:
+        warnings.append("Chronological order was repaired before cleanup.")
     if reduction_ratio > 0.40:
         warnings.append("Cleanup was conservative because too many steps were at risk of removal.")
         kept = []
@@ -483,8 +631,23 @@ def clean_sop_steps(
     if max_steps is not None:
         merged = merged[:max_steps]
 
-    phased, phase_summary = _apply_phases(_renumber(merged))
-    quality_report = _quality_report(len(original), phased, removed_steps, merged_records, warnings)
+    ordered = sorted(merged, key=_ordering_value)
+    final_chronology = validate_chronological_order(ordered)
+    if not final_chronology["is_chronological"]:
+        warnings.append("Chronological order required final repair.")
+        ordered = sorted(ordered, key=_ordering_value)
+    phased, phase_summary = _apply_phases(_renumber(ordered))
+    repaired_chronology = validate_chronological_order(phased)
+    quality_report = _quality_report(
+        len(original),
+        phased,
+        removed_steps,
+        merged_records,
+        warnings,
+        initial_chronology,
+        chronology_repaired or final_chronology["violations"] != [],
+    )
+    quality_report["chronological_order_valid"] = repaired_chronology["is_chronological"]
     return {
         "steps": phased,
         "removed_steps": removed_steps,

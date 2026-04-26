@@ -107,6 +107,9 @@ This test proves the local fallback path works.
 - PivotTable phase assignment.
 - quality scoring and demo-readiness.
 - screenshot evidence preservation.
+- chronological order validation and repair.
+- repeated phase sections in timeline order.
+- generic non-Excel browser workflow cleanup.
 
 ## Known Development Limits
 

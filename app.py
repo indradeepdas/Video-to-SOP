@@ -130,12 +130,20 @@ def main() -> None:
                         quality_cols[4].metric("Quality", cleanup_report.get("quality_score", "unknown"))
                         readiness = cleanup_report.get("readiness", "needs_review")
                         label = readiness_labels.get(readiness, readiness)
+                        chrono_ok = cleanup_report.get("chronological_order_valid")
+                        chrono_count = cleanup_report.get("chronological_violations_count", 0)
                         if readiness == "demo_ready":
                             st.success(label)
                         elif readiness == "needs_review":
                             st.warning(label)
                         else:
                             st.error(label)
+                        if chrono_ok is not None:
+                            st.caption(
+                                "Chronology: "
+                                + ("valid" if chrono_ok else "needs repair")
+                                + f" ({chrono_count} violation{'s' if chrono_count != 1 else ''} detected before cleanup)"
+                            )
                     segmentation = meta.get("segmentation") or {}
                     if segmentation:
                         diag_cols = st.columns(3)
