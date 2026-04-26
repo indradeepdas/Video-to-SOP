@@ -38,6 +38,7 @@ def export_docx(
     department_notes: str = "",
     warnings: list[str] | None = None,
     job_metadata: dict[str, Any] | None = None,
+    cleanup_report: dict[str, Any] | None = None,
 ) -> str:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,6 +135,36 @@ def export_docx(
                 document.add_paragraph(f"{key}: {value}")
     else:
         document.add_paragraph("No job metadata was recorded.")
+
+    if cleanup_report:
+        quality = cleanup_report.get("quality_report") or {}
+        document.add_heading("Cleanup and quality report", level=1)
+        document.add_paragraph(f"Original step count: {quality.get('step_count_before', 'unknown')}")
+        document.add_paragraph(f"Cleaned step count: {quality.get('step_count_after', 'unknown')}")
+        document.add_paragraph(f"Removed steps: {quality.get('removed_count', 0)}")
+        document.add_paragraph(f"Merged steps: {quality.get('merged_count', 0)}")
+        document.add_paragraph(f"Quality score: {quality.get('quality_score', 'unknown')}")
+        document.add_paragraph(f"Readiness: {quality.get('readiness', 'unknown')}")
+        for warning in quality.get("warnings", []) or []:
+            document.add_paragraph(f"Warning: {warning}")
+
+        removed = cleanup_report.get("removed_steps") or []
+        if removed:
+            document.add_heading("Removed steps", level=2)
+            for item in removed:
+                document.add_paragraph(
+                    f"Original step {item.get('original_step_number')}: {item.get('action')} "
+                    f"Reason: {item.get('reason')}"
+                )
+
+        merged = cleanup_report.get("merged_steps") or []
+        if merged:
+            document.add_heading("Merged steps", level=2)
+            for item in merged:
+                document.add_paragraph(
+                    f"Source steps {item.get('source_step_numbers')}: {item.get('merged_action')} "
+                    f"Reason: {item.get('reason')}"
+                )
 
     document.save(output_path)
     return str(output_path)

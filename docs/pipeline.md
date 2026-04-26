@@ -155,7 +155,23 @@ Validation enforces:
 
 The app does not create fake steps to reach a minimum count.
 
-## 14. Phase Grouping
+## 14. SOP Cleanup And Quality Control
+
+After verification and validation, Video2SOP runs a deterministic cleanup layer. This stage does not call OpenAI.
+
+It removes obvious non-operational noise such as presenter outros, social banners, YouTube end cards, and generic visible-screen review steps. It also removes weak passive review-only steps unless they are true validation checkpoints.
+
+Adjacent same-intent steps are merged conservatively when they have the same system, overlapping output, close evidence timing, and high token similarity. Distinct operational steps such as adding different PivotTable fields are preserved.
+
+The cleanup stage assigns deterministic business phases, writes a quality score, and marks readiness as `demo_ready`, `needs_review`, or `not_ready`.
+
+Artifacts:
+
+- `steps_validated.json`: verified and schema-valid steps before cleanup.
+- `sop_cleanup.json`: removed steps, merged steps, phase summary, and quality report.
+- `steps_final.json`: final cleaned steps used in the DOCX.
+
+## 15. Phase Grouping
 
 Steps are grouped into:
 
@@ -167,7 +183,7 @@ Steps are grouped into:
 
 Grouping is rule-based and uses system plus action text.
 
-## 15. DOCX Export
+## 16. DOCX Export
 
 The final DOCX includes:
 
@@ -180,4 +196,5 @@ The final DOCX includes:
 - screenshots with segment timestamp range
 - confidence indicators
 - low-confidence review checklist
+- cleanup and quality report appendix
 - job metadata appendix

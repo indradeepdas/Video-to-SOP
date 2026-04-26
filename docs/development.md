@@ -98,6 +98,16 @@ This test proves the local fallback path works.
 - screen-state recurrence.
 - synthetic SAP-to-Excel-to-SAP segmentation.
 
+`tests/test_sop_cleanup.py` covers:
+
+- presenter/outro/social noise removal.
+- passive review cleanup.
+- validation checkpoint preservation.
+- adjacent duplicate merging.
+- PivotTable phase assignment.
+- quality scoring and demo-readiness.
+- screenshot evidence preservation.
+
 ## Known Development Limits
 
 - There is no multi-user queue.

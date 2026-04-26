@@ -14,6 +14,7 @@ The generated DOCX includes:
 - Screenshot evidence for each step.
 - System, action, expected output, and confidence for each step.
 - Low-confidence review checklist.
+- Cleanup and quality report.
 - Job metadata appendix.
 
 The app does not pad the SOP with invented steps. If a short or repetitive recording only supports fewer than 25 steps, it produces fewer steps and adds a warning.
@@ -107,6 +108,7 @@ Important files:
 - `ocr/`: preprocessed OCR images when Tesseract is available.
 - `artifacts/*.json`: pipeline evidence and intermediate outputs.
 - `artifacts/segmentation_report.md`: adaptive boundary and screen-state diagnostics.
+- `artifacts/sop_cleanup.json`: removed steps, merged steps, phase summary, quality score, and readiness.
 - `sop.docx`: final SOP.
 
 ## Documentation

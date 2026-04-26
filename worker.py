@@ -8,6 +8,7 @@ from pipeline.config import DEFAULT_PROFILE, estimate_job_cost, get_profile, pro
 from pipeline.docx_export import export_docx
 from pipeline.generate import generate_steps
 from pipeline.segmentation import segment_frames, segmentation_report
+from pipeline.sop_cleanup import clean_sop_steps
 from pipeline.validate import group_phases, validate_steps
 from pipeline.verify import verify_steps
 from pipeline.video import extract_frames
@@ -95,15 +96,21 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
         valid_steps = validate_steps(verified, max_steps=profile.max_steps)
         if not valid_steps:
             valid_steps = validate_steps(generate_steps(events[:25], batch_size=profile.batch_size), max_steps=profile.max_steps)
-        _write_json(artifacts_dir / "steps_final.json", valid_steps)
+        _write_json(artifacts_dir / "steps_validated.json", valid_steps)
+
+        cleanup = clean_sop_steps(valid_steps, metadata=base_meta, max_steps=profile.max_steps)
+        final_steps = cleanup["steps"]
+        _write_json(artifacts_dir / "sop_cleanup.json", cleanup)
+        _write_json(artifacts_dir / "steps_final.json", final_steps)
 
         update_job(db_path, job_id, progress=0.90, message="Building DOCX")
         warnings = []
-        if len(valid_steps) < 25:
+        if len(final_steps) < 25:
             warnings.append(
-                f"Only {len(valid_steps)} evidence-backed steps were found. The SOP was not padded with invented steps."
+                f"Only {len(final_steps)} evidence-backed steps were found. The SOP was not padded with invented steps."
             )
-        phases = group_phases(valid_steps)
+        warnings.extend(cleanup["quality_report"].get("warnings", []))
+        phases = group_phases(final_steps)
         export_docx(
             process_name,
             phases,
@@ -111,9 +118,18 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
             target_audience=target_audience,
             department_notes=department_notes,
             warnings=warnings,
+            cleanup_report=cleanup,
             job_metadata=finish_meta(
                 {
-                    "steps": len(valid_steps),
+                    "steps": len(final_steps),
+                    "original_steps": cleanup["quality_report"]["step_count_before"],
+                    "cleaned_steps": cleanup["quality_report"]["step_count_after"],
+                    "removed_steps": cleanup["quality_report"]["removed_count"],
+                    "merged_steps": cleanup["quality_report"]["merged_count"],
+                    "quality_score": cleanup["quality_report"]["quality_score"],
+                    "readiness": cleanup["quality_report"]["readiness"],
+                    "cleanup_report": cleanup["quality_report"],
+                    "phase_summary": cleanup["phase_summary"],
                     "events": len(events),
                     "frames": len(frames),
                     "screen_states": len(segmentation.get("screen_states", [])),
@@ -140,7 +156,15 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
             error=None,
             meta_json=finish_meta(
                 {
-                    "steps": len(valid_steps),
+                    "steps": len(final_steps),
+                    "original_steps": cleanup["quality_report"]["step_count_before"],
+                    "cleaned_steps": cleanup["quality_report"]["step_count_after"],
+                    "removed_steps": cleanup["quality_report"]["removed_count"],
+                    "merged_steps": cleanup["quality_report"]["merged_count"],
+                    "quality_score": cleanup["quality_report"]["quality_score"],
+                    "readiness": cleanup["quality_report"]["readiness"],
+                    "cleanup_report": cleanup["quality_report"],
+                    "phase_summary": cleanup["phase_summary"],
                     "events": len(events),
                     "frames": len(frames),
                     "screen_states": len(segmentation.get("screen_states", [])),
@@ -167,10 +191,13 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                 fallback_events = json.loads((artifacts_dir / "classified.json").read_text(encoding="utf-8"))[:25]
             if fallback_events:
                 steps = validate_steps(generate_steps(fallback_events, batch_size=profile.batch_size), max_steps=profile.max_steps)
-                phases = group_phases(steps)
+                cleanup = clean_sop_steps(steps, metadata=base_meta, max_steps=profile.max_steps)
+                final_steps = cleanup["steps"]
+                phases = group_phases(final_steps)
                 warnings = ["The SOP was produced using fallback handling after a pipeline error."]
-                if len(steps) < 25:
-                    warnings.append(f"Only {len(steps)} evidence-backed steps were found; no invented padding was added.")
+                if len(final_steps) < 25:
+                    warnings.append(f"Only {len(final_steps)} evidence-backed steps were found; no invented padding was added.")
+                warnings.extend(cleanup["quality_report"].get("warnings", []))
                 export_docx(
                     process_name,
                     phases,
@@ -178,7 +205,20 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                     target_audience=target_audience,
                     department_notes=department_notes,
                     warnings=warnings,
-                    job_metadata=finish_meta({"fallback": True, "steps": len(steps)}),
+                    cleanup_report=cleanup,
+                    job_metadata=finish_meta(
+                        {
+                            "fallback": True,
+                            "steps": len(final_steps),
+                            "original_steps": cleanup["quality_report"]["step_count_before"],
+                            "cleaned_steps": cleanup["quality_report"]["step_count_after"],
+                            "removed_steps": cleanup["quality_report"]["removed_count"],
+                            "merged_steps": cleanup["quality_report"]["merged_count"],
+                            "quality_score": cleanup["quality_report"]["quality_score"],
+                            "readiness": cleanup["quality_report"]["readiness"],
+                            "cleanup_report": cleanup["quality_report"],
+                        }
+                    ),
                 )
                 update_job(
                     db_path,
@@ -188,7 +228,20 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                     message="SOP ready with fallback output",
                     output_path=str(output_path),
                     error=error_text,
-                    meta_json=finish_meta({"fallback": True, "steps": len(steps), "warnings": warnings}),
+                    meta_json=finish_meta(
+                        {
+                            "fallback": True,
+                            "steps": len(final_steps),
+                            "original_steps": cleanup["quality_report"]["step_count_before"],
+                            "cleaned_steps": cleanup["quality_report"]["step_count_after"],
+                            "removed_steps": cleanup["quality_report"]["removed_count"],
+                            "merged_steps": cleanup["quality_report"]["merged_count"],
+                            "quality_score": cleanup["quality_report"]["quality_score"],
+                            "readiness": cleanup["quality_report"]["readiness"],
+                            "cleanup_report": cleanup["quality_report"],
+                            "warnings": warnings,
+                        }
+                    ),
                 )
                 return
         except Exception:
