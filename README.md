@@ -6,19 +6,20 @@ The current implementation is local-first:
 
 - OpenCV extracts dense frames for metric scoring and selected frames for evidence.
 - A deterministic segmentation engine detects screen-state boundaries.
-- OCR enriches segment evidence when Tesseract is installed.
+- OCR enriches segment evidence when native Tesseract is installed. The app now resolves `TESSERACT_CMD`, PATH, and common Windows install paths.
 - Rule-based classification and deterministic cleanup reduce noise, passive filler, and weak duplicates.
-- OpenAI is optional and used only for bounded step wording, ambiguous-boundary review, and risky-step verification.
+- OpenAI vision is required for production-grade SOP wording. Without OpenAI, the app can create an OCR draft when OCR text is available or a diagnostic draft when no semantic evidence is available.
 - The final DOCX includes screenshots, confidence indicators, timeline-safe phase sections, and a cleanup quality appendix.
 
 ## Product Promise
 
 Turn a process recording into a professional SOP in minutes.
 
-The product is designed to remain usable with and without OpenAI:
+The product is designed to remain honest with and without OpenAI:
 
-- With OpenAI: better wording, better conservative phrasing, bounded boundary review, and risky-step verification.
-- Without OpenAI: the app still produces a DOCX from local evidence, but wording quality and specificity are usually lower.
+- With OpenAI: production vision mode for evidence-backed SOP wording, bounded boundary review, and risky-step verification.
+- Without OpenAI but with OCR: OCR draft mode using local text evidence.
+- Without OpenAI and without OCR text: diagnostic draft mode only; the document is marked `not_ready`.
 
 ## What The App Produces
 
@@ -91,7 +92,7 @@ The main last-mile quality guard is now the deterministic cleanup layer in [pipe
 - `python-docx`
 - `openai`
 - `pytesseract`
-- Optional but recommended: native Tesseract OCR installed on the system and available on PATH
+- Native Tesseract OCR installed on the system. On Windows, the app also checks `C:\Program Files\Tesseract-OCR\tesseract.exe`.
 
 Python package dependencies are listed in [requirements.txt](<G:/My Drive/Video-to-SOP/requirements.txt>).
 
@@ -103,7 +104,23 @@ Install Python dependencies:
 python -m pip install -r requirements.txt
 ```
 
-For OCR, install native Tesseract separately and make sure `tesseract.exe` is on PATH. The repository includes the Python bridge (`pytesseract`) but does not vendor the native OCR binary itself. Without native Tesseract, the app still runs, but OCR-derived evidence is weaker and more steps tend toward `medium` or `low` confidence.
+For OCR, install native Tesseract separately. The repository includes the Python bridge (`pytesseract`) but does not vendor the native OCR binary itself.
+
+```powershell
+winget install UB-Mannheim.TesseractOCR
+```
+
+If Tesseract is installed but not on PATH, set:
+
+```powershell
+$env:TESSERACT_CMD="C:\Program Files\Tesseract-OCR\tesseract.exe"
+```
+
+Check local prerequisites:
+
+```powershell
+python scripts\check_prereqs.py
+```
 
 ## OpenAI Configuration
 
@@ -116,7 +133,7 @@ $env:OPENAI_MODEL="gpt-5.5"
 
 Or keep placeholders in a local `.env` file based on [.env.example](<G:/My Drive/Video-to-SOP/.env.example>). The app itself reads environment variables directly; if you use `.env`, load it in your shell or through local tooling before starting Streamlit.
 
-If `OPENAI_API_KEY` is not set, the app falls back to local evidence-only step generation and local cleanup.
+If `OPENAI_API_KEY` is not set, the app uses OCR draft mode when OCR text exists. If neither OpenAI nor OCR text is available, the app blocks production SOP generation and only allows an explicit diagnostic draft.
 
 Current default cost estimates use GPT-5.5 pricing defaults of `$5 / 1M input tokens` and `$30 / 1M output tokens`, based on [OpenAI API Pricing](https://openai.com/api/pricing/) as checked on April 25, 2026.
 

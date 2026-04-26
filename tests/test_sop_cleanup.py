@@ -162,6 +162,70 @@ class SopCleanupTests(unittest.TestCase):
             result["quality_report"]["warnings"],
         )
 
+    def test_diagnostic_fallback_rows_cannot_be_demo_ready(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(
+                    index,
+                    f"Review the process state shown at event {index}.",
+                    expected=f"Screen state {index} is visible for the next workflow action.",
+                    system="Other",
+                    confidence="low",
+                    generation_source="diagnostic_fallback",
+                    diagnostic_only=True,
+                )
+                for index in range(1, 36)
+            ],
+            metadata={
+                "event_segments": 35,
+                "generation_mode": "diagnostic_only",
+                "openai_configured": False,
+                "ocr_available": False,
+                "ocr_non_empty_count": 0,
+            },
+        )
+        self.assertEqual(result["quality_report"]["readiness"], "not_ready")
+        self.assertGreater(result["quality_report"]["diagnostic_step_count"], 0)
+        self.assertIn(
+            "Diagnostic draft mode was used because no production evidence source was available.",
+            result["quality_report"]["readiness_blockers"],
+        )
+
+    def test_openai_failure_blocks_demo_ready(self) -> None:
+        result = clean_sop_steps(
+            [step(index, f"Complete operational action {index}.", system="Browser") for index in range(1, 10)],
+            metadata={
+                "event_segments": 9,
+                "generation_mode": "production_vision",
+                "openai_configured": True,
+                "openai_calls_attempted": 1,
+                "openai_calls_succeeded": 0,
+                "openai_errors": ["boom"],
+                "ocr_available": True,
+                "ocr_non_empty_count": 5,
+            },
+        )
+        self.assertNotEqual(result["quality_report"]["readiness"], "demo_ready")
+        self.assertIn(
+            "OpenAI vision generation was attempted but did not succeed.",
+            result["quality_report"]["readiness_blockers"],
+        )
+
+    def test_local_ocr_draft_records_mode_and_semantic_counts(self) -> None:
+        result = clean_sop_steps(
+            [step(index, f"Update customer field {index}.", system="Browser", generation_source="local_ocr") for index in range(1, 6)],
+            metadata={
+                "event_segments": 5,
+                "generation_mode": "local_ocr_draft",
+                "openai_configured": False,
+                "ocr_available": True,
+                "ocr_non_empty_count": 5,
+            },
+        )
+        self.assertEqual(result["quality_report"]["generation_mode"], "local_ocr_draft")
+        self.assertEqual(result["quality_report"]["generation_source_counts"]["local_ocr"], 5)
+        self.assertEqual(result["quality_report"]["diagnostic_step_count"], 0)
+
     def test_missing_percentage_configuration_blocks_demo_ready(self) -> None:
         result = clean_sop_steps(
             [

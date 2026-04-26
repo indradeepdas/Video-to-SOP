@@ -8,6 +8,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from pipeline.capabilities import DIAGNOSTIC_ONLY, capability_status
 from pipeline.config import DEFAULT_PROFILE, PROFILES, estimate_job_cost, get_profile, model_name, profile_to_dict
 from storage.jobs import create_job, get_job, init_db, list_jobs
 from worker import run_job
@@ -36,13 +37,18 @@ def main() -> None:
 
     st.title("Video2SOP Fast Mode")
     st.caption("Upload a screen recording and generate a screenshot-backed SOP DOCX.")
+    capabilities = capability_status()
 
     with st.sidebar:
         st.subheader("Configuration")
         model = model_name()
         st.text_input("OpenAI model", value=model, disabled=True)
-        st.write("OpenAI:", "configured" if os.getenv("OPENAI_API_KEY") else "not configured; fallback mode")
-        st.write("OCR:", "Tesseract via pytesseract when installed")
+        st.write("OpenAI:", "configured" if capabilities["openai_configured"] else "not configured")
+        ocr = capabilities.get("ocr_status") or {}
+        st.write("OCR:", "available" if capabilities["ocr_available"] else "not installed")
+        if ocr.get("cmd"):
+            st.caption(f"Tesseract: {ocr.get('cmd')}")
+        st.write("Mode:", capabilities["generation_mode"].replace("_", " "))
 
     st.subheader("Process details")
     process_name = st.text_input("Process name", placeholder="Example: Vendor invoice review and export")
@@ -67,9 +73,17 @@ def main() -> None:
     )
 
     upload = st.file_uploader("Upload screen recording", type=["mp4", "mov", "mkv", "avi"])
+    diagnostic_override = False
+    if capabilities["generation_mode"] == DIAGNOSTIC_ONLY:
+        st.error("Production SOP generation needs OpenAI vision or usable OCR. Neither is currently available.")
+        diagnostic_override = st.checkbox("Generate diagnostic draft anyway")
     col_a, col_b = st.columns([1, 3])
     with col_a:
-        process = st.button("Generate SOP", type="primary", disabled=upload is None)
+        process = st.button(
+            "Generate SOP",
+            type="primary",
+            disabled=upload is None or (capabilities["generation_mode"] == DIAGNOSTIC_ONLY and not diagnostic_override),
+        )
 
     if process and upload is not None:
         job_id = uuid.uuid4().hex[:12]
@@ -87,6 +101,8 @@ def main() -> None:
             "target_audience": target_audience.strip() or "New employee",
             "quality_profile": profile_to_dict(profile),
             "cost_estimate": estimate,
+            "requested_generation_mode": capabilities["generation_mode"],
+            "diagnostic_override": diagnostic_override,
         }
         create_job(DB_PATH, job_id, str(input_path), meta=metadata)
         st.session_state["active_job_id"] = job_id
@@ -131,6 +147,13 @@ def main() -> None:
                         quality_cols[3].metric("Merged", cleanup_report.get("merged_count", 0))
                         quality_cols[4].metric("Coverage", cleanup_report.get("coverage_ratio_after_cleanup", "unknown"))
                         quality_cols[5].metric("Quality", cleanup_report.get("quality_score", "unknown"))
+                        st.caption(
+                            "Generation mode: "
+                            f"{cleanup_report.get('generation_mode', meta.get('generation_mode', 'unknown')).replace('_', ' ')}; "
+                            f"OCR text frames: {cleanup_report.get('ocr_non_empty_count', meta.get('ocr_non_empty_count', 0))}; "
+                            f"OpenAI calls: {cleanup_report.get('openai_calls_succeeded', meta.get('openai_calls_succeeded', 0))}/"
+                            f"{cleanup_report.get('openai_calls_attempted', meta.get('openai_calls_attempted', 0))}"
+                        )
                         readiness = cleanup_report.get("readiness", "needs_review")
                         label = readiness_labels.get(readiness, readiness)
                         chrono_ok = cleanup_report.get("chronological_order_valid")
@@ -161,6 +184,10 @@ def main() -> None:
                             "Operational checkpoints kept",
                             cleanup_report.get("operational_checkpoint_count", 0),
                         )
+                        semantic_cols = st.columns(3)
+                        semantic_cols[0].metric("Semantic coverage", cleanup_report.get("semantic_coverage_score", "unknown"))
+                        semantic_cols[1].metric("Operational actions", cleanup_report.get("operational_action_count", 0))
+                        semantic_cols[2].metric("Generic reviews", cleanup_report.get("generic_review_count", 0))
                         blockers = cleanup_report.get("readiness_blockers") or []
                         if blockers:
                             st.caption("Top blockers")

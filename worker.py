@@ -5,6 +5,7 @@ import re
 import traceback
 from pathlib import Path
 
+from pipeline.capabilities import capability_status, generation_mode_after_ocr
 from pipeline.config import DEFAULT_PROFILE, estimate_job_cost, get_profile, profile_to_dict
 from pipeline.docx_export import export_docx
 from pipeline.generate import generate_steps
@@ -63,6 +64,7 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
         process_name = _process_name_from_file(input_path, upload_name=upload_name)
     department_notes = base_meta.get("department_notes", "")
     target_audience = base_meta.get("target_audience", "New employee")
+    initial_capabilities = capability_status()
 
     def finish_meta(extra: dict) -> dict:
         merged = dict(base_meta)
@@ -97,16 +99,26 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
         _write_json(artifacts_dir / "events.json", segmentation["event_segments"])
         _write_text(artifacts_dir / "segmentation_report.md", segmentation_report(segmentation))
         events = segmentation["event_segments"]
+        ocr_results = segmentation.get("ocr_results", [])
+        ocr_non_empty_count = sum(1 for item in ocr_results if str(item.get("raw_text") or "").strip())
+        openai_ready = bool(initial_capabilities.get("openai_configured"))
+        generation_mode = generation_mode_after_ocr(openai_ready, ocr_non_empty_count)
 
         reserved_gpt_calls = 1 + (1 if profile.ambiguous_boundary_reviews > 0 else 0)
         generation_call_budget = max(1, profile.max_gpt_calls - reserved_gpt_calls)
 
         update_job(db_path, job_id, progress=0.68, message="Generating SOP steps from segments")
+        generation_stats = {
+            "openai_calls_attempted": 0,
+            "openai_calls_succeeded": 0,
+            "openai_errors": [],
+        }
         steps = generate_steps(
             events,
             batch_size=profile.batch_size,
             max_calls=generation_call_budget,
             include_context_images=profile.include_context_images,
+            run_stats=generation_stats,
         )
         _write_json(artifacts_dir / "steps_generated.json", steps)
 
@@ -119,6 +131,14 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
 
         cleanup_metadata = {
             **base_meta,
+            "generation_mode": generation_mode,
+            "openai_configured": openai_ready,
+            "openai_calls_attempted": generation_stats.get("openai_calls_attempted", 0),
+            "openai_calls_succeeded": generation_stats.get("openai_calls_succeeded", 0),
+            "openai_errors": generation_stats.get("openai_errors", []),
+            "ocr_available": bool(initial_capabilities.get("ocr_available")),
+            "ocr_status": initial_capabilities.get("ocr_status"),
+            "ocr_non_empty_count": ocr_non_empty_count,
             "event_segments": len(events),
             "events": len(events),
             "segmentation": {
@@ -159,6 +179,14 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                     "quality_score": cleanup["quality_report"]["quality_score"],
                     "readiness": cleanup["quality_report"]["readiness"],
                     "cleanup_report": cleanup["quality_report"],
+                    "generation_mode": generation_mode,
+                    "openai_configured": openai_ready,
+                    "openai_calls_attempted": generation_stats.get("openai_calls_attempted", 0),
+                    "openai_calls_succeeded": generation_stats.get("openai_calls_succeeded", 0),
+                    "openai_errors": generation_stats.get("openai_errors", []),
+                    "ocr_available": bool(initial_capabilities.get("ocr_available")),
+                    "ocr_status": initial_capabilities.get("ocr_status"),
+                    "ocr_non_empty_count": ocr_non_empty_count,
                     "phase_summary": cleanup["phase_summary"],
                     "event_segments": len(events),
                     "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
@@ -201,6 +229,14 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                     "quality_score": cleanup["quality_report"]["quality_score"],
                     "readiness": cleanup["quality_report"]["readiness"],
                     "cleanup_report": cleanup["quality_report"],
+                    "generation_mode": generation_mode,
+                    "openai_configured": openai_ready,
+                    "openai_calls_attempted": generation_stats.get("openai_calls_attempted", 0),
+                    "openai_calls_succeeded": generation_stats.get("openai_calls_succeeded", 0),
+                    "openai_errors": generation_stats.get("openai_errors", []),
+                    "ocr_available": bool(initial_capabilities.get("ocr_available")),
+                    "ocr_status": initial_capabilities.get("ocr_status"),
+                    "ocr_non_empty_count": ocr_non_empty_count,
                     "phase_summary": cleanup["phase_summary"],
                     "event_segments": len(events),
                     "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
@@ -234,10 +270,39 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
             elif (artifacts_dir / "classified.json").exists():
                 fallback_events = json.loads((artifacts_dir / "classified.json").read_text(encoding="utf-8"))[:25]
             if fallback_events:
-                steps = validate_steps(generate_steps(fallback_events, batch_size=profile.batch_size), max_steps=profile.max_steps)
+                fallback_ocr_non_empty = sum(1 for item in fallback_events if str(item.get("clean_text") or item.get("ocr_text") or "").strip())
+                fallback_generation_mode = generation_mode_after_ocr(
+                    bool(initial_capabilities.get("openai_configured")),
+                    fallback_ocr_non_empty,
+                )
+                fallback_generation_stats = {
+                    "openai_calls_attempted": 0,
+                    "openai_calls_succeeded": 0,
+                    "openai_errors": [],
+                }
+                steps = validate_steps(
+                    generate_steps(
+                        fallback_events,
+                        batch_size=profile.batch_size,
+                        run_stats=fallback_generation_stats,
+                    ),
+                    max_steps=profile.max_steps,
+                )
                 cleanup = clean_sop_steps(
                     steps,
-                    metadata={**base_meta, "event_segments": len(fallback_events), "events": len(fallback_events)},
+                    metadata={
+                        **base_meta,
+                        "generation_mode": fallback_generation_mode,
+                        "openai_configured": bool(initial_capabilities.get("openai_configured")),
+                        "openai_calls_attempted": fallback_generation_stats.get("openai_calls_attempted", 0),
+                        "openai_calls_succeeded": fallback_generation_stats.get("openai_calls_succeeded", 0),
+                        "openai_errors": fallback_generation_stats.get("openai_errors", []),
+                        "ocr_available": bool(initial_capabilities.get("ocr_available")),
+                        "ocr_status": initial_capabilities.get("ocr_status"),
+                        "ocr_non_empty_count": fallback_ocr_non_empty,
+                        "event_segments": len(fallback_events),
+                        "events": len(fallback_events),
+                    },
                     max_steps=profile.max_steps,
                 )
                 final_steps = cleanup["steps"]
@@ -265,6 +330,14 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                             "quality_score": cleanup["quality_report"]["quality_score"],
                             "readiness": cleanup["quality_report"]["readiness"],
                             "cleanup_report": cleanup["quality_report"],
+                            "generation_mode": fallback_generation_mode,
+                            "openai_configured": bool(initial_capabilities.get("openai_configured")),
+                            "openai_calls_attempted": fallback_generation_stats.get("openai_calls_attempted", 0),
+                            "openai_calls_succeeded": fallback_generation_stats.get("openai_calls_succeeded", 0),
+                            "openai_errors": fallback_generation_stats.get("openai_errors", []),
+                            "ocr_available": bool(initial_capabilities.get("ocr_available")),
+                            "ocr_status": initial_capabilities.get("ocr_status"),
+                            "ocr_non_empty_count": fallback_ocr_non_empty,
                             "event_segments": len(fallback_events),
                             "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
                             "coverage_ratio_after_cleanup": cleanup["quality_report"].get("coverage_ratio_after_cleanup"),
@@ -294,6 +367,14 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                             "quality_score": cleanup["quality_report"]["quality_score"],
                             "readiness": cleanup["quality_report"]["readiness"],
                             "cleanup_report": cleanup["quality_report"],
+                            "generation_mode": fallback_generation_mode,
+                            "openai_configured": bool(initial_capabilities.get("openai_configured")),
+                            "openai_calls_attempted": fallback_generation_stats.get("openai_calls_attempted", 0),
+                            "openai_calls_succeeded": fallback_generation_stats.get("openai_calls_succeeded", 0),
+                            "openai_errors": fallback_generation_stats.get("openai_errors", []),
+                            "ocr_available": bool(initial_capabilities.get("ocr_available")),
+                            "ocr_status": initial_capabilities.get("ocr_status"),
+                            "ocr_non_empty_count": fallback_ocr_non_empty,
                             "event_segments": len(fallback_events),
                             "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
                             "coverage_ratio_after_cleanup": cleanup["quality_report"].get("coverage_ratio_after_cleanup"),

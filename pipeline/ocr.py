@@ -1,14 +1,81 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shutil
+import subprocess
 from typing import Any
 
 import cv2
 
 
+COMMON_TESSERACT_PATHS = [
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+]
+
+
+def resolve_tesseract_cmd() -> str | None:
+    candidates = []
+    env_cmd = os.getenv("TESSERACT_CMD")
+    if env_cmd:
+        candidates.append(env_cmd)
+    path_cmd = shutil.which("tesseract")
+    if path_cmd:
+        candidates.append(path_cmd)
+    candidates.extend(COMMON_TESSERACT_PATHS)
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if path.exists():
+            return str(path)
+        if shutil.which(candidate):
+            return str(candidate)
+    return None
+
+
+def configure_tesseract() -> str | None:
+    cmd = resolve_tesseract_cmd()
+    if not cmd:
+        return None
+    try:
+        import pytesseract
+
+        pytesseract.pytesseract.tesseract_cmd = cmd
+    except Exception:
+        pass
+    return cmd
+
+
 def tesseract_available() -> bool:
-    return shutil.which("tesseract") is not None
+    return configure_tesseract() is not None
+
+
+def ocr_status() -> dict[str, Any]:
+    cmd = configure_tesseract()
+    if not cmd:
+        return {
+            "available": False,
+            "cmd": None,
+            "version": None,
+            "error": "Tesseract executable was not found via TESSERACT_CMD, PATH, or common Windows install paths.",
+        }
+    try:
+        completed = subprocess.run(
+            [cmd, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        version = (completed.stdout or completed.stderr or "").splitlines()[0].strip()
+        if completed.returncode != 0:
+            return {"available": False, "cmd": cmd, "version": version or None, "error": completed.stderr.strip()}
+        return {"available": True, "cmd": cmd, "version": version, "error": None}
+    except Exception as exc:
+        return {"available": False, "cmd": cmd, "version": None, "error": str(exc)}
 
 
 def _preprocess_for_ocr(image_path: str, output_path: str) -> str:
@@ -32,6 +99,7 @@ def _preprocess_for_ocr(image_path: str, output_path: str) -> str:
 
 def _ocr_with_tesseract(image_path: str) -> str:
     try:
+        configure_tesseract()
         import pytesseract
         from PIL import Image
     except Exception:

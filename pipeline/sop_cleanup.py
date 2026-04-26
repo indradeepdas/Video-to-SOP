@@ -372,7 +372,7 @@ def _field_detail_tokens(step: dict[str, Any]) -> set[str]:
         "series",
         "slicer",
     }
-    return tokens & detail_terms
+    return (tokens & detail_terms) | {token for token in tokens if token.isdigit()}
 
 
 def _distinct_pivot_field_operations(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -634,12 +634,12 @@ def _correct_phase_for_intent(step: dict[str, Any], phase: str, workflow_family:
     text = _normalize(_text(step))
     corrected = phase
     if workflow_family == "excel_pivottable":
-        if any(term in text for term in ["pivotchart", "pivot chart", "insert a pivotchart", "insert pivotchart"]):
+        if "slicer" in text and any(term in text for term in ["apply", "review", "validate", "verify"]):
+            corrected = "Validate final output"
+        elif any(term in text for term in ["pivotchart", "pivot chart", "insert a pivotchart", "insert pivotchart"]):
             corrected = "Build chart and slicer"
         elif any(term in text for term in ["insert slicers", "insert slicer", "region slicer", "open the insert slicers dialog"]):
             corrected = "Build chart and slicer"
-        elif "slicer" in text and any(term in text for term in ["apply", "review", "validate", "verify"]):
-            corrected = "Validate final output"
         elif any(term in text for term in ["percentage", "measure", "rename", "sum", "maximum", "max"]):
             corrected = "Add calculations and formatting"
         elif any(term in text for term in ["review the pivottable summary", "review the pivottable", "review the pivot table", "review the pivotchart and slicer"]):
@@ -788,7 +788,6 @@ def _completeness_signals(steps: list[dict[str, Any]], event_segments: int) -> d
                     "add a second sales amount measure",
                     "display it as a percentage",
                     "show values as a percentage",
-                    "percentage measure",
                 ]
             ):
                 missing_action_patterns.append("Percentage measure configuration may be under-described.")
@@ -804,6 +803,27 @@ def _completeness_signals(steps: list[dict[str, Any]], event_segments: int) -> d
     }
 
 
+def _semantic_counts(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    source_counts = Counter(str(step.get("generation_source") or "unknown") for step in steps)
+    diagnostic_count = sum(1 for step in steps if step.get("diagnostic_only") or step.get("generation_source") == "diagnostic_fallback")
+    generic_review_count = sum(
+        1
+        for step in steps
+        if _is_review_style(step)
+        and not _has_meaningful_action(step)
+        or str(step.get("action", "")).lower().startswith("review the process state shown")
+    )
+    operational_action_count = sum(1 for step in steps if _has_meaningful_action(step) and not step.get("diagnostic_only"))
+    semantic_coverage_score = round(operational_action_count / max(1, len(steps)), 3)
+    return {
+        "generation_source_counts": dict(source_counts),
+        "diagnostic_step_count": diagnostic_count,
+        "generic_review_count": generic_review_count,
+        "operational_action_count": operational_action_count,
+        "semantic_coverage_score": semantic_coverage_score,
+    }
+
+
 def _quality_report(
     before_count: int,
     steps: list[dict[str, Any]],
@@ -816,8 +836,11 @@ def _quality_report(
     coverage_justification: str,
     completeness: dict[str, Any],
     phase_summary: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    metadata = metadata or {}
     noise_count, passive_count, duplicate_count = _remaining_counts(steps)
+    semantic = _semantic_counts(steps)
     low_confidence_count = sum(1 for step in steps if step.get("confidence") != "high")
     operational_checkpoint_count = sum(1 for step in steps if step.get("review_category") == "operational_checkpoint")
     contextual_review_count = sum(1 for step in steps if step.get("review_category") == "contextual_review")
@@ -844,6 +867,12 @@ def _quality_report(
         score -= 35
     if medium_long_coverage_shortfall:
         score -= 15
+    if semantic["diagnostic_step_count"]:
+        score -= min(60, 8 * semantic["diagnostic_step_count"])
+    if event_segments >= 25 and semantic["semantic_coverage_score"] < 0.55:
+        score -= 35
+    if steps and semantic["generic_review_count"] / len(steps) > 0.20:
+        score -= 25
     score -= 8 * len(completeness.get("missing_action_patterns", []))
     score -= 5 * len(completeness.get("suspicious_review_runs", []))
     if not steps:
@@ -864,6 +893,22 @@ def _quality_report(
     score = max(0, min(100, score))
     coverage_blocks_demo = coverage_guardrail_triggered and not coverage_justification
     readiness_blockers: list[str] = []
+    generation_mode = str(metadata.get("generation_mode") or "unknown")
+    ocr_available = bool(metadata.get("ocr_available"))
+    ocr_non_empty_count = int(metadata.get("ocr_non_empty_count") or 0)
+    openai_configured = bool(metadata.get("openai_configured"))
+    openai_calls_attempted = int(metadata.get("openai_calls_attempted") or 0)
+    openai_calls_succeeded = int(metadata.get("openai_calls_succeeded") or 0)
+    openai_errors = list(metadata.get("openai_errors") or [])
+    has_capability_metadata = any(
+        key in metadata
+        for key in (
+            "generation_mode",
+            "openai_configured",
+            "ocr_available",
+            "ocr_non_empty_count",
+        )
+    )
     if not (chronological_valid or chronology_repaired):
         readiness_blockers.append("Chronological order remains inconsistent.")
     if noise_count:
@@ -874,6 +919,18 @@ def _quality_report(
         readiness_blockers.append(UNDER_COVERAGE_WARNING)
     if contextual_review_count > max(3, len(steps) // 5):
         readiness_blockers.append("Too many passive review steps remain relative to operational actions.")
+    if generation_mode == "diagnostic_only":
+        readiness_blockers.append("Diagnostic draft mode was used because no production evidence source was available.")
+    if semantic["diagnostic_step_count"] > len(steps) / 2:
+        readiness_blockers.append("Most steps came from diagnostic fallback generation.")
+    if has_capability_metadata and not openai_configured and not ocr_non_empty_count:
+        readiness_blockers.append("OpenAI vision was unavailable and OCR produced no usable text.")
+    if openai_configured and openai_calls_attempted and openai_calls_succeeded == 0:
+        readiness_blockers.append("OpenAI vision generation was attempted but did not succeed.")
+    if event_segments >= 25 and semantic["semantic_coverage_score"] < 0.55:
+        readiness_blockers.append("Operational action coverage is too low for a medium or long workflow.")
+    if steps and semantic["generic_review_count"] / len(steps) > 0.20:
+        readiness_blockers.append("Too many generic review rows remain.")
     if completeness.get("missing_action_patterns"):
         readiness_blockers.extend(completeness["missing_action_patterns"])
     if phase_summary.get("phase_corrections", 0) >= 3:
@@ -882,8 +939,9 @@ def _quality_report(
     coverage_gate = not medium_long_coverage_shortfall and not coverage_blocks_demo and not raw_under_coverage
     operational_gate = not noise_count and (chronological_valid or chronology_repaired) and not completeness.get("missing_action_patterns")
     passive_gate = contextual_review_count <= max(3, len(steps) // 5)
+    semantic_gate = not readiness_blockers and semantic["diagnostic_step_count"] == 0
 
-    if score >= 80 and coverage_gate and operational_gate and passive_gate and not readiness_blockers:
+    if score >= 80 and coverage_gate and operational_gate and passive_gate and semantic_gate:
         readiness = "demo_ready"
     elif score >= 60:
         readiness = "needs_review"
@@ -911,6 +969,19 @@ def _quality_report(
         "coverage_warnings": completeness.get("coverage_warnings", []),
         "missing_action_patterns": completeness.get("missing_action_patterns", []),
         "suspicious_review_runs": completeness.get("suspicious_review_runs", []),
+        "generation_mode": generation_mode,
+        "generation_source_counts": semantic["generation_source_counts"],
+        "openai_configured": openai_configured,
+        "openai_calls_attempted": openai_calls_attempted,
+        "openai_calls_succeeded": openai_calls_succeeded,
+        "openai_errors": openai_errors,
+        "ocr_available": ocr_available,
+        "ocr_non_empty_count": ocr_non_empty_count,
+        "semantic_coverage_score": semantic["semantic_coverage_score"],
+        "operational_action_count": semantic["operational_action_count"],
+        "generic_review_count": semantic["generic_review_count"],
+        "diagnostic_step_count": semantic["diagnostic_step_count"],
+        "semantic_coverage_warnings": completeness.get("coverage_warnings", []),
         "readiness_blockers": readiness_blockers,
         "quality_score": score,
         "readiness": readiness,
@@ -1032,6 +1103,7 @@ def clean_sop_steps(
         coverage_justification,
         completeness,
         phase_summary,
+        metadata,
     )
     quality_report["chronological_order_valid"] = repaired_chronology["is_chronological"]
     return {

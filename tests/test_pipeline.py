@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest import mock
 
 from pipeline.classify import classify_system
 from pipeline.clean_ocr import clean_text
@@ -146,6 +147,69 @@ class PipelineRuleTests(unittest.TestCase):
         finally:
             if old_key:
                 os.environ["OPENAI_API_KEY"] = old_key
+
+    def test_generate_marks_diagnostic_fallback_without_openai_or_ocr(self) -> None:
+        old_key = os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            steps = generate_steps(
+                [
+                    {
+                        "event_id": 1,
+                        "system": "Other",
+                        "path": "missing.jpg",
+                        "clean_text": "",
+                        "screen_state_id": 1,
+                        "time_sec": 0,
+                    }
+                ]
+            )
+            self.assertEqual(steps[0]["generation_source"], "diagnostic_fallback")
+            self.assertTrue(steps[0]["diagnostic_only"])
+        finally:
+            if old_key:
+                os.environ["OPENAI_API_KEY"] = old_key
+
+    def test_generate_marks_local_ocr_without_openai(self) -> None:
+        old_key = os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            steps = generate_steps(
+                [
+                    {
+                        "event_id": 1,
+                        "system": "SAP",
+                        "path": "missing.jpg",
+                        "clean_text": "SAP invoice status posted",
+                        "time_sec": 0,
+                    }
+                ]
+            )
+            self.assertEqual(steps[0]["generation_source"], "local_ocr")
+            self.assertFalse(steps[0]["diagnostic_only"])
+        finally:
+            if old_key:
+                os.environ["OPENAI_API_KEY"] = old_key
+
+    def test_generate_records_openai_failure(self) -> None:
+        stats = {}
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test"}, clear=False):
+            with mock.patch("pipeline.generate._call_openai", side_effect=RuntimeError("boom")):
+                steps = generate_steps(
+                    [
+                        {
+                            "event_id": 1,
+                            "system": "Other",
+                            "path": "missing.jpg",
+                            "clean_text": "",
+                            "screen_state_id": 1,
+                            "time_sec": 0,
+                        }
+                    ],
+                    run_stats=stats,
+                )
+        self.assertEqual(stats["openai_calls_attempted"], 1)
+        self.assertEqual(stats["openai_calls_succeeded"], 0)
+        self.assertTrue(stats["openai_errors"])
+        self.assertTrue(steps[0]["openai_generation_failed"])
 
     def test_process_name_normalization_strips_downloader_noise(self) -> None:
         name = _process_name_from_file(

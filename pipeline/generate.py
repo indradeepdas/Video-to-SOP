@@ -157,12 +157,14 @@ def _call_openai(
     raise RuntimeError(f"OpenAI generation failed: {last_error}")
 
 
-def _fallback_action(event: dict[str, Any]) -> dict[str, Any]:
+def _fallback_action(event: dict[str, Any], openai_failed: bool = False) -> dict[str, Any]:
     system = event.get("system") or "Other"
     text = (event.get("clean_text") or "").lower()
     hint = event.get("action_hint", "")
     event_id = int(event.get("event_id", 0) or 0)
     state = event.get("screen_state_id")
+    generation_source = "local_ocr" if text.strip() else "diagnostic_fallback"
+    diagnostic_only = generation_source == "diagnostic_fallback"
     if hint == "filter" or "filter" in text:
         action = "Apply or review the visible filter criteria."
         expected = "The filtered results are displayed for review."
@@ -203,6 +205,10 @@ def _fallback_action(event: dict[str, Any]) -> dict[str, Any]:
         "action": action,
         "expected_output": expected,
         "confidence": "low" if not event.get("clean_text") else "medium",
+        "generation_source": generation_source,
+        "diagnostic_only": diagnostic_only,
+        "semantic_quality": "diagnostic" if diagnostic_only else "passive",
+        "openai_generation_failed": openai_failed,
     }
 
 
@@ -259,28 +265,45 @@ def generate_steps(
     model: str | None = None,
     max_calls: int | None = None,
     include_context_images: bool = True,
+    run_stats: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     model = model or os.getenv("OPENAI_MODEL", "gpt-5.5")
     use_openai = bool(os.getenv("OPENAI_API_KEY"))
+    if run_stats is not None:
+        run_stats.setdefault("openai_calls_attempted", 0)
+        run_stats.setdefault("openai_calls_succeeded", 0)
+        run_stats.setdefault("openai_errors", [])
     all_steps: list[dict[str, Any]] = []
 
     calls_used = 0
     for start in range(0, len(events), batch_size):
         batch = events[start : start + batch_size]
         generated: list[dict[str, Any]] = []
+        openai_failed = False
         if use_openai and (max_calls is None or calls_used < max_calls):
             calls_used += 1
+            if run_stats is not None:
+                run_stats["openai_calls_attempted"] += 1
             try:
                 generated = _call_openai(batch, model=model, include_context_images=include_context_images)
-            except Exception:
+                if run_stats is not None:
+                    run_stats["openai_calls_succeeded"] += 1
+                for item in generated:
+                    item["generation_source"] = "openai_vision"
+                    item["diagnostic_only"] = False
+                    item["semantic_quality"] = "operational"
+            except Exception as exc:
+                openai_failed = True
+                if run_stats is not None:
+                    run_stats["openai_errors"].append(str(exc))
                 generated = []
         if not generated:
-            generated = [_fallback_action(event) for event in batch]
+            generated = [_fallback_action(event, openai_failed=openai_failed) for event in batch]
 
         by_event = {int(item.get("event_id", -1)): item for item in generated if str(item.get("event_id", "")).isdigit()}
         for event in batch:
-            item = by_event.get(int(event["event_id"])) or _fallback_action(event)
-            fallback = _fallback_action(event)
+            item = by_event.get(int(event["event_id"])) or _fallback_action(event, openai_failed=openai_failed)
+            fallback = _fallback_action(event, openai_failed=openai_failed)
             all_steps.append(
                 {
                     "event_id": int(event["event_id"]),
@@ -304,6 +327,10 @@ def generate_steps(
                     "action_hint": event.get("action_hint", "review"),
                     "rule_system": event.get("system", "Other"),
                     "source_event_index": int(event["event_id"]),
+                    "generation_source": item.get("generation_source") or fallback["generation_source"],
+                    "diagnostic_only": bool(item.get("diagnostic_only", fallback["diagnostic_only"])),
+                    "semantic_quality": item.get("semantic_quality") or fallback["semantic_quality"],
+                    "openai_generation_failed": bool(item.get("openai_generation_failed") or openai_failed),
                 }
             )
 

@@ -64,6 +64,11 @@ def export_docx(
         "needs_review": "Needs manual review",
         "not_ready": "Not ready",
     }.get(quality.get("readiness"), "Needs manual review")
+    mode_label = {
+        "production_vision": "Production SOP",
+        "local_ocr_draft": "OCR draft",
+        "diagnostic_only": "Diagnostic draft",
+    }.get(quality.get("generation_mode"), "SOP draft")
     if summary:
         document.add_paragraph(summary)
     else:
@@ -77,7 +82,7 @@ def export_docx(
         )
         document.add_paragraph(
             f"This SOP documents the process captured in the uploaded screen recording. "
-            f"Readiness: {readiness_label}. {coverage_line}"
+            f"Output type: {mode_label}. Readiness: {readiness_label}. {coverage_line}"
         )
     p = document.add_paragraph()
     _add_kv(p, "Target audience", target_audience)
@@ -169,6 +174,17 @@ def export_docx(
         document.add_paragraph(f"Removed steps: {quality.get('removed_count', 0)}")
         document.add_paragraph(f"Merged steps: {quality.get('merged_count', 0)}")
         document.add_paragraph(f"Passive filler removed: {quality.get('passive_filler_removed_count', 0)}")
+        document.add_paragraph(f"Generation mode: {quality.get('generation_mode', 'unknown')}")
+        document.add_paragraph(f"Generation source counts: {json.dumps(quality.get('generation_source_counts', {}), ensure_ascii=False)}")
+        document.add_paragraph(f"OCR available: {quality.get('ocr_available', 'unknown')}")
+        document.add_paragraph(f"OCR non-empty frames: {quality.get('ocr_non_empty_count', 'unknown')}")
+        document.add_paragraph(
+            f"OpenAI calls: {quality.get('openai_calls_succeeded', 0)} / {quality.get('openai_calls_attempted', 0)}"
+        )
+        document.add_paragraph(f"Semantic coverage score: {quality.get('semantic_coverage_score', 'unknown')}")
+        document.add_paragraph(f"Operational action count: {quality.get('operational_action_count', 'unknown')}")
+        document.add_paragraph(f"Generic review count: {quality.get('generic_review_count', 'unknown')}")
+        document.add_paragraph(f"Diagnostic step count: {quality.get('diagnostic_step_count', 'unknown')}")
         document.add_paragraph(f"Chronological order valid: {quality.get('chronological_order_valid', 'unknown')}")
         document.add_paragraph(f"Chronological violations: {quality.get('chronological_violations_count', 'unknown')}")
         document.add_paragraph(f"Quality score: {quality.get('quality_score', 'unknown')}")

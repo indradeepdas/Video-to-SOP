@@ -145,13 +145,12 @@ The returned estimate includes:
 
 ## OCR Configuration
 
-OCR is optional but recommended.
+OCR is required for local draft quality when OpenAI vision is unavailable. The code resolves native Tesseract in this order:
 
-The code checks for native Tesseract with:
-
-```python
-shutil.which("tesseract")
-```
+1. `TESSERACT_CMD`
+2. PATH lookup for `tesseract`
+3. `C:\Program Files\Tesseract-OCR\tesseract.exe`
+4. `C:\Program Files (x86)\Tesseract-OCR\tesseract.exe`
 
 What is included in the repo:
 
@@ -177,8 +176,26 @@ If native Tesseract is found:
 If native Tesseract is missing:
 
 - OCR text stays empty
-- the pipeline continues
-- local and model evidence have to carry more of the output
+- production SOP generation is blocked unless OpenAI vision is configured
+- explicit diagnostic drafts remain possible
+
+Recommended Windows install:
+
+```powershell
+winget install UB-Mannheim.TesseractOCR
+```
+
+Optional local override:
+
+```powershell
+$env:TESSERACT_CMD="C:\Program Files\Tesseract-OCR\tesseract.exe"
+```
+
+Check prerequisites:
+
+```powershell
+python scripts\check_prereqs.py
+```
 
 ## Upload Limit
 
@@ -197,7 +214,7 @@ This allows uploads up to 2048 MB.
 
 ## Runtime Modes
 
-### With OpenAI
+### Production Vision
 
 OpenAI is used for:
 
@@ -207,16 +224,18 @@ OpenAI is used for:
 
 Cleanup, ordering, chronology repair, and DOCX export remain local and deterministic.
 
-### Without OpenAI
+### OCR Draft
 
-The app still works using:
+When OpenAI is unavailable but OCR produces text, the app can generate an OCR draft using:
 
 - local segmentation
 - local OCR when available
 - local fallback step generation
 - deterministic cleanup and quality scoring
 
-Quality is usually lower without OpenAI, but the tool remains usable end to end.
+### Diagnostic Draft
+
+When neither OpenAI vision nor OCR text is available, the app marks output as a diagnostic draft and blocks `demo_ready`.
 
 ## Public Repository Safety
 

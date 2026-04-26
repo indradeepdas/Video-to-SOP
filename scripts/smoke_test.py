@@ -79,6 +79,14 @@ def main() -> int:
         "readiness_blockers",
         "operational_checkpoint_count",
         "passive_filler_removed_count",
+        "generation_mode",
+        "generation_source_counts",
+        "ocr_available",
+        "ocr_non_empty_count",
+        "semantic_coverage_score",
+        "operational_action_count",
+        "generic_review_count",
+        "diagnostic_step_count",
     }
     if not required_cleanup_fields.issubset(cleanup):
         print(job)
