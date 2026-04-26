@@ -15,6 +15,9 @@ Rules:
 - Return exactly one JSON object for every input event_id. Do not skip event_ids.
 - Treat one event_id as one possible SOP step produced by the segmentation engine.
 - Do not merge multiple event_ids into one conceptual SOP step.
+- If a screenshot shows a dialog, pane, field configuration area, chart setup, slicer setup, or calculation setup that changes workflow state, describe that configuration action explicitly.
+- Do not compress a measure-add action and a rename action unless the evidence clearly shows one combined operation.
+- Prefer separate event-specific steps for actions such as adding a measure, changing a calculation, showing values as a percentage, renaming a field, inserting a chart, inserting a slicer, and applying a slicer selection when they appear across distinct events.
 - Do not hallucinate clicks, typed values, names, or outcomes.
 - Only describe what is visible in segment screenshots and OCR.
 - Use stable_frame evidence first; before/after frames only provide context.
@@ -36,6 +39,11 @@ Rules:
 """
 
 ALLOWED_CONFIDENCE = {"high", "medium", "low"}
+GENERIC_REVIEW_SIGNATURES = {
+    "review the visible process screen",
+    "review the process state shown",
+    "review the process screen shown",
+}
 
 
 def _encode_image(path: str) -> str:
@@ -98,9 +106,13 @@ def _call_openai(
                 "diff_score": round(float(event.get("diff_score", 0)), 4),
                 "boundary_score": round(float(event.get("boundary_score", 0)), 4),
                 "screen_state_id": event.get("screen_state_id"),
+                "previous_screen_state_id": previous_event.get("screen_state_id"),
+                "next_screen_state_id": next_event.get("screen_state_id"),
                 "ocr": (event.get("clean_text") or "")[:1200],
                 "previous_ocr": (previous_event.get("clean_text") or "")[:350],
                 "next_ocr": (next_event.get("clean_text") or "")[:350],
+                "dense_repeated_run": bool(event.get("dense_repeated_run")),
+                "ocr_blank": not bool((event.get("clean_text") or "").strip()),
             }
         )
         for image_role, image_path in _image_parts_for_event(event, include_context_images):
@@ -167,8 +179,12 @@ def _fallback_action(event: dict[str, Any]) -> dict[str, Any]:
         action = "Review the visible invoice or supplier details."
         expected = "The required business details are visible for validation."
     elif system == "Excel":
-        action = "Review or update the visible spreadsheet data."
-        expected = "The spreadsheet shows the relevant working data."
+        if "pivot" in text or "field" in text or "measure" in text:
+            action = "Review or configure the visible Excel analysis element."
+            expected = "The Excel worksheet or analysis view reflects the visible configuration change."
+        else:
+            action = "Review or update the visible spreadsheet data."
+            expected = "The spreadsheet shows the relevant working data."
     elif system == "SAP":
         action = "Open or review the visible SAP transaction screen."
         expected = "The SAP screen displays the relevant process information."
@@ -188,6 +204,53 @@ def _fallback_action(event: dict[str, Any]) -> dict[str, Any]:
         "expected_output": expected,
         "confidence": "low" if not event.get("clean_text") else "medium",
     }
+
+
+def _looks_generic_review(action: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9 ]+", " ", action.lower()).strip()
+    return any(normalized.startswith(signature) for signature in GENERIC_REVIEW_SIGNATURES)
+
+
+def _audit_generated_steps(steps: list[dict[str, Any]], events: list[dict[str, Any]]) -> None:
+    previous_signature = ""
+    run_length = 0
+    event_map = {int(event.get("event_id", 0)): event for event in events}
+    for index, step in enumerate(steps):
+        action = str(step.get("action", ""))
+        signature = re.sub(r"\W+", " ", f"{step.get('system')} {action} {step.get('expected_output')}".lower()).strip()
+        event = event_map.get(int(step.get("event_id", 0)), {})
+        if signature == previous_signature:
+            run_length += 1
+        else:
+            previous_signature = signature
+            run_length = 1
+        if run_length >= 2 and _looks_generic_review(action):
+            step["weak_coverage_candidate"] = True
+            step["coverage_review_required"] = True
+
+        excel_operational_gap = (
+            step.get("system") == "Excel"
+            and _looks_generic_review(action)
+            and (
+                step.get("action_hint") in {"data entry", "filter", "post/save"}
+                or float(step.get("boundary_score", 0) or 0) >= 0.18
+                or any(
+                    phrase in (step.get("ocr", "") or "").lower()
+                    for phrase in ["field", "measure", "sum", "maximum", "percentage", "pivotchart", "slicer", "dialog", "pane"]
+                )
+            )
+        )
+        if excel_operational_gap:
+            step["coverage_review_required"] = True
+            step["possible_missing_operation"] = True
+
+        previous_event = event_map.get(int(events[index - 1].get("event_id", 0))) if index > 0 and index - 1 < len(events) else {}
+        next_event = event_map.get(int(events[index + 1].get("event_id", 0))) if index + 1 < len(events) else {}
+        if _looks_generic_review(action) and (
+            previous_event.get("screen_state_id") != event.get("screen_state_id")
+            or next_event.get("screen_state_id") != event.get("screen_state_id")
+        ):
+            step["coverage_review_required"] = True
 
 
 def generate_steps(
@@ -244,16 +307,6 @@ def generate_steps(
                 }
             )
 
-    previous_signature = ""
-    run_length = 0
-    for step in all_steps:
-        signature = re.sub(r"\W+", " ", f"{step.get('system')} {step.get('action')} {step.get('expected_output')}".lower()).strip()
-        if signature == previous_signature:
-            run_length += 1
-        else:
-            previous_signature = signature
-            run_length = 1
-        if run_length >= 3 and "review the visible process screen" in signature:
-            step["weak_coverage_candidate"] = True
+    _audit_generated_steps(all_steps, events)
 
     return all_steps[:40]

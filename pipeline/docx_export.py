@@ -58,12 +58,26 @@ def export_docx(
         phase_sections = list(phases.items())
 
     step_count = sum(len(items) for _, items in phase_sections)
+    quality = (cleanup_report or {}).get("quality_report") or {}
+    readiness_label = {
+        "demo_ready": "Demo-ready",
+        "needs_review": "Needs manual review",
+        "not_ready": "Not ready",
+    }.get(quality.get("readiness"), "Needs manual review")
     if summary:
         document.add_paragraph(summary)
     else:
+        coverage_ratio = quality.get("coverage_ratio_after_cleanup")
+        event_segments = quality.get("event_segments")
+        coverage_line = (
+            f"Coverage: {step_count} cleaned steps from {event_segments} event segments"
+            + (f" ({coverage_ratio:.3f})." if isinstance(coverage_ratio, (float, int)) else ".")
+            if event_segments
+            else f"Coverage: {step_count} evidence-backed steps."
+        )
         document.add_paragraph(
             f"This SOP documents the process captured in the uploaded screen recording. "
-            f"It contains {step_count} evidence-backed steps grouped by phase, with screenshots and confidence indicators."
+            f"Readiness: {readiness_label}. {coverage_line}"
         )
     p = document.add_paragraph()
     _add_kv(p, "Target audience", target_audience)
@@ -142,7 +156,6 @@ def export_docx(
         document.add_paragraph("No job metadata was recorded.")
 
     if cleanup_report:
-        quality = cleanup_report.get("quality_report") or {}
         document.add_heading("Cleanup and quality report", level=1)
         document.add_paragraph(f"Original step count: {quality.get('step_count_before', 'unknown')}")
         document.add_paragraph(f"Cleaned step count: {quality.get('step_count_after', 'unknown')}")
@@ -155,12 +168,15 @@ def export_docx(
         )
         document.add_paragraph(f"Removed steps: {quality.get('removed_count', 0)}")
         document.add_paragraph(f"Merged steps: {quality.get('merged_count', 0)}")
+        document.add_paragraph(f"Passive filler removed: {quality.get('passive_filler_removed_count', 0)}")
         document.add_paragraph(f"Chronological order valid: {quality.get('chronological_order_valid', 'unknown')}")
         document.add_paragraph(f"Chronological violations: {quality.get('chronological_violations_count', 'unknown')}")
         document.add_paragraph(f"Quality score: {quality.get('quality_score', 'unknown')}")
         document.add_paragraph(f"Readiness: {quality.get('readiness', 'unknown')}")
         for warning in quality.get("warnings", []) or []:
             document.add_paragraph(f"Warning: {warning}")
+        for blocker in quality.get("readiness_blockers", []) or []:
+            document.add_paragraph(f"Readiness blocker: {blocker}")
 
         removed = cleanup_report.get("removed_steps") or []
         if removed:

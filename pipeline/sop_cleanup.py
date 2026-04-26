@@ -467,66 +467,197 @@ def _merge_pair(left: dict[str, Any], right: dict[str, Any]) -> tuple[dict[str, 
     return base, record
 
 
-def _phase_for_step(step: dict[str, Any], pivot_workflow: bool) -> str:
+def _workflow_family(steps: list[dict[str, Any]]) -> str:
+    combined = " ".join(_normalize(_text(step) + " " + str(step.get("ocr", ""))) for step in steps)
+    systems = Counter(step.get("system", "Other") for step in steps)
+    if any(term in combined for term in ["pivottable", "pivot table", "pivotchart", "slicer"]):
+        return "excel_pivottable"
+    if systems.get("Excel"):
+        return "excel"
+    if systems.get("SAP"):
+        return "sap"
+    if systems.get("Browser"):
+        return "browser_crud"
+    return "generic"
+
+
+def _is_review_style(step: dict[str, Any]) -> bool:
+    action = _normalize(str(step.get("action", "")))
+    return (
+        action.startswith("review ")
+        or action.startswith("validate ")
+        or action.startswith("verify ")
+        or action.startswith("confirm that ")
+    )
+
+
+def _review_object_terms(text: str) -> set[str]:
+    found = set()
+    for label, phrases in {
+        "table": ["table", "worksheet", "source data", "header row"],
+        "pivottable": ["pivottable", "pivot table"],
+        "chart": ["pivotchart", "pivot chart", "chart"],
+        "slicer": ["slicer"],
+        "filter": ["filter"],
+        "result": ["summary", "total", "result", "confirmation", "status", "message", "output", "export"],
+    }.items():
+        if any(phrase in text for phrase in phrases):
+            found.add(label)
+    return found
+
+
+def _review_category(
+    step: dict[str, Any],
+    previous: dict[str, Any] | None,
+    following: dict[str, Any] | None,
+    workflow_family: str,
+) -> str | None:
+    if not (_is_review_style(step) or _is_passive_review(step) or _is_validation_checkpoint(step)):
+        return None
+    if _is_validation_checkpoint(step):
+        return "operational_checkpoint"
+
     text = _normalize(_text(step))
-    system = step.get("system", "")
-    if system == "SAP":
-        if any(term in text for term in ["open", "display", "transaction", "access"]):
-            return "Open transaction"
-        if any(term in text for term in ["enter", "document", "invoice", "field", "data"]):
-            return "Enter document data"
-        if any(term in text for term in ["validate", "verify", "confirm", "check"]):
-            return "Validate posting"
+    object_terms = _review_object_terms(text)
+    previous_meaningful = bool(previous and _has_meaningful_action(previous))
+    next_meaningful = bool(following and _has_meaningful_action(following))
+    bridges_transition = bool(
+        previous_meaningful
+        and next_meaningful
+        and (
+            previous.get("system") != following.get("system")
+            or _target_tokens(previous) != _target_tokens(following)
+            or _action_roots(previous) != _action_roots(following)
+        )
+    )
+
+    if workflow_family.startswith("excel"):
+        if any(
+            term in text
+            for term in [
+                "worksheet data",
+                "fields pane",
+                "design tab",
+                "visible process screen",
+                "screen remains visible",
+            ]
+        ):
+            return "passive_filler"
+        verifies_output = any(
+            term in text
+            for term in [
+                "formatted excel table",
+                "selected header row",
+                "source data table",
+                "pivottable summary",
+                "pivot table summary",
+                "pivottable with",
+                "pivot table with",
+                "pivotchart",
+                "pivot chart",
+                "slicer",
+                "filter",
+                "percentage column",
+            ]
+        )
+        if verifies_output and previous_meaningful:
+            return "operational_checkpoint"
+        if verifies_output and (next_meaningful or bridges_transition):
+            return "contextual_review"
+    if object_terms and previous_meaningful:
+        return "operational_checkpoint"
+    if object_terms and (next_meaningful or bridges_transition):
+        return "contextual_review"
+    return "passive_filler"
+
+
+def _phase_for_step(step: dict[str, Any], workflow_family: str) -> str:
+    text = _normalize(_text(step))
+    if workflow_family == "sap":
         if any(term in text for term in ["save", "post", "submit"]):
             return "Save or post document"
-    if system == "Browser":
-        if any(term in text for term in ["export", "download", "report"]):
+        if any(term in text for term in ["validate", "verify", "confirm", "check", "status"]):
+            return "Validate posting"
+        if any(term in text for term in ["enter", "document", "invoice", "field", "data", "vendor", "amount"]):
+            return "Enter document data"
+        return "Open transaction"
+    if workflow_family == "browser_crud":
+        if any(term in text for term in ["export", "download", "report", "close"]):
             return "Export, save, or close process"
-        if any(term in text for term in ["validate", "verify", "confirm", "appears", "confirmation"]):
+        if any(term in text for term in ["validate", "verify", "confirm", "appears", "confirmation", "status changed"]):
             return "Validate result"
         if any(term in text for term in ["submit", "save", "apply"]):
             return "Submit changes"
-        if any(term in text for term in ["update", "enter", "field", "edit", "change"]):
+        if any(term in text for term in ["update", "enter", "field", "edit", "change", "rename"]):
             return "Update fields"
-        if any(term in text for term in ["open", "navigate", "search", "record", "customer"]):
-            return "Navigate to record"
-    if pivot_workflow or system == "Excel":
-        if any(term in text for term in ["workbook", "source data", "sales data", "worksheet data", "data range", "header row"]):
-            return "Prepare source data"
-        if "table" in text and "pivottable" not in text:
-            return "Create Excel table"
-        if "pivottable" in text and any(term in text for term in ["create", "setup", "blank"]):
-            return "Create PivotTable"
-        if any(term in text for term in ["row field", "column field", "value field", "salesperson", "region", "move region", "reorder row"]):
-            return "Configure PivotTable fields"
-        if any(term in text for term in ["percentage", "measure", "rename", "format", "calculation", "sum", "maximum"]):
-            return "Add calculations and formatting"
-        if any(term in text for term in ["pivotchart", "chart", "slicer"]):
+        return "Navigate to record"
+    if workflow_family == "excel_pivottable":
+        if any(term in text for term in ["pivotchart", "pivot chart", "chart", "slicer"]):
+            if any(term in text for term in ["apply", "review", "validate", "verify", "confirm"]):
+                return "Validate final output"
             return "Build chart and slicer"
-        if any(term in text for term in ["validate", "verify", "confirm", "final", "summarized"]):
+        if any(term in text for term in ["percentage", "measure", "rename", "format", "calculation", "sum", "maximum", "max"]):
+            return "Add calculations and formatting"
+        if any(term in text for term in ["row field", "column field", "value field", "salesperson", "region", "rows area", "columns area", "move region", "reorder row"]):
+            return "Configure PivotTable fields"
+        if "pivottable" in text and any(term in text for term in ["create", "setup", "worksheet", "table"]):
+            return "Create PivotTable"
+        if "table" in text and "pivottable" not in text and any(term in text for term in ["create", "confirm", "formatted", "selected range", "headers"]):
+            return "Create Excel table"
+        if any(term in text for term in ["validate", "verify", "summary", "totals", "result", "final output"]):
             return "Validate final output"
         return "Prepare source data"
-    if any(term in text for term in ["open", "display", "log in", "access", "navigate", "search"]):
+    if workflow_family == "excel":
+        if any(term in text for term in ["export", "download", "save", "close"]):
+            return "Export, save, or close process"
+        if any(term in text for term in ["validate", "verify", "confirm", "summary", "result"]):
+            return "Review and validate"
+        if any(term in text for term in ["format", "formula", "calculation", "chart", "table", "pivot"]):
+            return "Configure records or fields"
+        if any(term in text for term in ["select", "prepare", "enter", "input", "source data", "worksheet"]):
+            return "Prepare input data"
         return "Open or access process"
-    if any(term in text for term in ["prepare", "select", "enter", "upload", "input"]):
-        return "Prepare input data"
-    if any(term in text for term in ["submit", "post", "approve", "reject", "execute", "save"]):
-        return "Execute main action"
-    if any(term in text for term in ["configure", "setting", "filter", "choose", "apply", "field", "update"]):
-        return "Configure records or fields"
     if any(term in text for term in ["export", "download", "generate", "close"]):
         return "Export, save, or close process"
-    return "Review and validate"
+    if any(term in text for term in ["validate", "verify", "review", "confirm", "check", "status"]):
+        return "Review and validate"
+    if any(term in text for term in ["submit", "post", "approve", "reject", "execute", "save"]):
+        return "Execute main action"
+    if any(term in text for term in ["configure", "setting", "filter", "choose", "apply", "field", "update", "change"]):
+        return "Configure records or fields"
+    if any(term in text for term in ["prepare", "select", "enter", "upload", "input"]):
+        return "Prepare input data"
+    return "Open or access process"
+
+
+def _correct_phase_for_intent(step: dict[str, Any], phase: str, workflow_family: str) -> tuple[str, bool]:
+    text = _normalize(_text(step))
+    corrected = phase
+    if workflow_family == "excel_pivottable":
+        if any(term in text for term in ["pivotchart", "pivot chart", "insert a pivotchart", "insert pivotchart"]):
+            corrected = "Build chart and slicer"
+        elif any(term in text for term in ["insert slicers", "insert slicer", "region slicer", "open the insert slicers dialog"]):
+            corrected = "Build chart and slicer"
+        elif "slicer" in text and any(term in text for term in ["apply", "review", "validate", "verify"]):
+            corrected = "Validate final output"
+        elif any(term in text for term in ["percentage", "measure", "rename", "sum", "maximum", "max"]):
+            corrected = "Add calculations and formatting"
+        elif any(term in text for term in ["review the pivottable summary", "review the pivottable", "review the pivot table", "review the pivotchart and slicer"]):
+            corrected = "Validate final output"
+    return corrected, corrected != phase
 
 
 def _apply_phases(steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    pivot_workflow = any("pivottable" in _normalize(_text(step)) or "pivotchart" in _normalize(_text(step)) for step in steps)
+    workflow_family = _workflow_family(steps)
     phase_counts: OrderedDict[str, int] = OrderedDict()
     timeline_sections = []
     current_phase = None
     phased = []
+    corrections = 0
     for step in steps:
-        phase = _phase_for_step(step, pivot_workflow)
+        phase = _phase_for_step(step, workflow_family)
+        phase, corrected = _correct_phase_for_intent(step, phase, workflow_family)
+        corrections += int(corrected)
         phase_counts[phase] = phase_counts.get(phase, 0) + 1
         if phase != current_phase:
             timeline_sections.append({"phase": phase, "start_step_number": step.get("step_number")})
@@ -536,7 +667,8 @@ def _apply_phases(steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         "phase_counts": dict(phase_counts),
         "phase_order": [section["phase"] for section in timeline_sections],
         "timeline_sections": timeline_sections,
-        "workflow_type": "excel_pivottable" if pivot_workflow else "generic",
+        "workflow_type": workflow_family,
+        "phase_corrections": corrections,
     }
 
 
@@ -546,7 +678,7 @@ def _renumber(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _remaining_counts(steps: list[dict[str, Any]]) -> tuple[int, int, int]:
     noise = sum(1 for step in steps if _is_noise(step))
-    passive = sum(1 for step in steps if _is_passive_review(step))
+    passive = sum(1 for step in steps if step.get("review_category") == "contextual_review" or _is_passive_review(step))
     duplicates = sum(1 for left, right in zip(steps, steps[1:]) if _is_duplicate_candidate(left, right))
     return noise, passive, duplicates
 
@@ -584,6 +716,94 @@ def _coverage_justification(metadata: dict[str, Any] | None) -> str:
     return str(metadata.get("coverage_justification") or "").strip()
 
 
+def _suspicious_review_runs(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    runs: list[dict[str, Any]] = []
+    start = None
+    for index, step in enumerate(steps):
+        is_review_run_step = step.get("review_category") in {"contextual_review", "passive_filler"} or (
+            _is_review_style(step) and not _has_meaningful_action(step)
+        )
+        if is_review_run_step:
+            start = index if start is None else start
+            continue
+        if start is not None and index - start >= 2:
+            runs.append(
+                {
+                    "start_step_number": steps[start].get("step_number"),
+                    "end_step_number": steps[index - 1].get("step_number"),
+                    "count": index - start,
+                }
+            )
+        start = None
+    if start is not None and len(steps) - start >= 2:
+        runs.append(
+            {
+                "start_step_number": steps[start].get("step_number"),
+                "end_step_number": steps[-1].get("step_number"),
+                "count": len(steps) - start,
+            }
+        )
+    return runs
+
+
+def _completeness_signals(steps: list[dict[str, Any]], event_segments: int) -> dict[str, Any]:
+    workflow_family = _workflow_family(steps)
+    warnings: list[str] = []
+    missing_action_patterns: list[str] = []
+    suspicious_review_runs = _suspicious_review_runs(steps)
+
+    if suspicious_review_runs:
+        warnings.append("Long review-only runs remain and may indicate missing operational actions.")
+
+    operational_steps = [step for step in steps if _has_meaningful_action(step)]
+    if event_segments >= 25 and len(operational_steps) < max(12, int(len(steps) * 0.55)):
+        warnings.append("Operational action density is low relative to the number of detected workflow events.")
+
+    if event_segments >= 25:
+        previous_operational_event = None
+        for step in operational_steps:
+            event_index = step.get("source_event_index")
+            try:
+                event_number = int(event_index)
+            except Exception:
+                event_number = None
+            if previous_operational_event is not None and event_number is not None and event_number - previous_operational_event >= 5:
+                warnings.append("Some event-rich sections are represented by very few operational steps.")
+                break
+            if event_number is not None:
+                previous_operational_event = event_number
+
+    combined_text = " ".join(
+        _normalize(
+            f"{step.get('action', '')} {step.get('expected_output', '')} {step.get('ocr', '')}"
+        )
+        for step in steps
+    )
+    actions_text = " ".join(_normalize(step.get("action", "")) for step in steps)
+    if workflow_family == "excel_pivottable":
+        if "percentage" in combined_text and "rename the percentage" in actions_text:
+            if not any(
+                phrase in actions_text
+                for phrase in [
+                    "add a second sales amount measure",
+                    "display it as a percentage",
+                    "show values as a percentage",
+                    "percentage measure",
+                ]
+            ):
+                missing_action_patterns.append("Percentage measure configuration may be under-described.")
+        if "slicer" in combined_text and "apply the region slicer" not in actions_text and "apply the slicer" not in actions_text:
+            missing_action_patterns.append("Slicer application appears in the evidence but is not described operationally.")
+        if "pivotchart" in combined_text and "insert a pivotchart" not in actions_text and "insert pivotchart" not in actions_text:
+            missing_action_patterns.append("PivotChart creation appears in the evidence but is not described clearly.")
+    return {
+        "coverage_warnings": warnings,
+        "missing_action_patterns": missing_action_patterns,
+        "suspicious_review_runs": suspicious_review_runs,
+        "workflow_family": workflow_family,
+    }
+
+
 def _quality_report(
     before_count: int,
     steps: list[dict[str, Any]],
@@ -594,22 +814,24 @@ def _quality_report(
     chronology_repaired: bool,
     event_segments: int,
     coverage_justification: str,
+    completeness: dict[str, Any],
+    phase_summary: dict[str, Any],
 ) -> dict[str, Any]:
     noise_count, passive_count, duplicate_count = _remaining_counts(steps)
     low_confidence_count = sum(1 for step in steps if step.get("confidence") != "high")
+    operational_checkpoint_count = sum(1 for step in steps if step.get("review_category") == "operational_checkpoint")
+    contextual_review_count = sum(1 for step in steps if step.get("review_category") == "contextual_review")
+    passive_filler_removed_count = sum(
+        1 for item in removed_steps if "passive" in str(item.get("reason", "")).lower() or "duplicated passive" in str(item.get("reason", "")).lower()
+    )
     generic_phase_count = sum(1 for step in steps if step.get("phase") in GENERIC_PHASES)
     coverage_ratio_before = round(before_count / event_segments, 3) if event_segments else None
     coverage_ratio_after = round(len(steps) / event_segments, 3) if event_segments else None
     coverage_minimum = _coverage_minimum(event_segments)
     raw_under_coverage = bool(event_segments and coverage_minimum and before_count < coverage_minimum)
-    final_under_coverage = bool(
-        event_segments
-        and (
-            len(steps) / event_segments < 0.60
-            or coverage_minimum
-            and len(steps) < coverage_minimum
-        )
-    )
+    medium_or_long = event_segments >= 25
+    final_under_coverage = bool(event_segments and coverage_ratio_after is not None and coverage_ratio_after < 0.60)
+    medium_long_coverage_shortfall = bool(medium_or_long and coverage_ratio_after is not None and coverage_ratio_after < 0.70)
     coverage_guardrail_triggered = raw_under_coverage or final_under_coverage
     score = 100
     score -= 10 * noise_count
@@ -620,6 +842,10 @@ def _quality_report(
         score -= 30
     if final_under_coverage:
         score -= 35
+    if medium_long_coverage_shortfall:
+        score -= 15
+    score -= 8 * len(completeness.get("missing_action_patterns", []))
+    score -= 5 * len(completeness.get("suspicious_review_runs", []))
     if not steps:
         score = 0
     elif len(steps) < 8:
@@ -637,9 +863,27 @@ def _quality_report(
         score -= 5
     score = max(0, min(100, score))
     coverage_blocks_demo = coverage_guardrail_triggered and not coverage_justification
-    if score >= 80 and noise_count == 0 and chronological_valid and not coverage_blocks_demo:
-        readiness = "demo_ready"
-    elif score >= 80 and noise_count == 0 and chronology_repaired and not coverage_blocks_demo:
+    readiness_blockers: list[str] = []
+    if not (chronological_valid or chronology_repaired):
+        readiness_blockers.append("Chronological order remains inconsistent.")
+    if noise_count:
+        readiness_blockers.append("Obvious non-operational video noise remains in the SOP.")
+    if medium_long_coverage_shortfall:
+        readiness_blockers.append("Coverage is too low for a medium or long workflow recording.")
+    if coverage_blocks_demo:
+        readiness_blockers.append(UNDER_COVERAGE_WARNING)
+    if contextual_review_count > max(3, len(steps) // 5):
+        readiness_blockers.append("Too many passive review steps remain relative to operational actions.")
+    if completeness.get("missing_action_patterns"):
+        readiness_blockers.extend(completeness["missing_action_patterns"])
+    if phase_summary.get("phase_corrections", 0) >= 3:
+        warnings.append("Multiple phase labels were corrected to match action intent.")
+
+    coverage_gate = not medium_long_coverage_shortfall and not coverage_blocks_demo and not raw_under_coverage
+    operational_gate = not noise_count and (chronological_valid or chronology_repaired) and not completeness.get("missing_action_patterns")
+    passive_gate = contextual_review_count <= max(3, len(steps) // 5)
+
+    if score >= 80 and coverage_gate and operational_gate and passive_gate and not readiness_blockers:
         readiness = "demo_ready"
     elif score >= 60:
         readiness = "needs_review"
@@ -661,6 +905,13 @@ def _quality_report(
         "coverage_ratio_after_cleanup": coverage_ratio_after,
         "coverage_guardrail_triggered": coverage_guardrail_triggered,
         "coverage_justification": coverage_justification,
+        "operational_checkpoint_count": operational_checkpoint_count,
+        "contextual_review_count": contextual_review_count,
+        "passive_filler_removed_count": passive_filler_removed_count,
+        "coverage_warnings": completeness.get("coverage_warnings", []),
+        "missing_action_patterns": completeness.get("missing_action_patterns", []),
+        "suspicious_review_runs": completeness.get("suspicious_review_runs", []),
+        "readiness_blockers": readiness_blockers,
         "quality_score": score,
         "readiness": readiness,
         "warnings": warnings,
@@ -677,6 +928,7 @@ def clean_sop_steps(
     coverage_justification = _coverage_justification(metadata)
     coverage_minimum = _coverage_minimum(event_segments)
     raw_under_coverage = bool(event_segments and coverage_minimum and len(original) < coverage_minimum)
+    workflow_family = _workflow_family(original)
     initial_chronology = validate_chronological_order(original)
     if not initial_chronology["is_chronological"]:
         original = sorted(original, key=_ordering_value)
@@ -686,19 +938,22 @@ def clean_sop_steps(
     kept: list[dict[str, Any]] = []
     seen_passive_signatures: Counter[str] = Counter()
 
-    for step in original:
+    for index, step in enumerate(original):
         signature = _normalize(_text(step))
+        previous = original[index - 1] if index > 0 else None
+        following = original[index + 1] if index + 1 < len(original) else None
+        review_category = _review_category(step, previous, following, workflow_family)
         if _is_noise(step):
             hard_removed.append(_removed_record(step, "Removed obvious non-operational presenter/outro/social noise."))
             continue
-        if _is_passive_review(step):
+        if review_category == "passive_filler":
             reason = "Removed passive review-only step without validation value."
             if signature in seen_passive_signatures:
                 reason = "Removed duplicated passive observation."
             borderline_removed.append(_removed_record(step, reason))
             seen_passive_signatures[signature] += 1
             continue
-        kept.append(step)
+        kept.append({**step, "review_category": review_category})
 
     candidate_removed = hard_removed + borderline_removed
     reduction_ratio = len(candidate_removed) / max(1, len(original))
@@ -717,7 +972,7 @@ def clean_sop_steps(
         for step in original:
             number = step.get("original_step_number")
             if number not in hard_removed_numbers:
-                kept.append(step)
+                kept.append({**step, "review_category": _review_category(step, None, None, workflow_family)})
     elif reduction_ratio > 0.40 and len(original) >= 5:
         warnings.append("Cleanup was conservative because too many steps were at risk of removal.")
         kept = []
@@ -726,7 +981,7 @@ def clean_sop_steps(
         for step in original:
             number = step.get("original_step_number")
             if number not in hard_removed_numbers:
-                kept.append(step)
+                kept.append({**step, "review_category": _review_category(step, None, None, workflow_family)})
     else:
         removed_steps = candidate_removed
 
@@ -761,6 +1016,10 @@ def clean_sop_steps(
         ordered = sorted(ordered, key=_ordering_value)
     phased, phase_summary = _apply_phases(_renumber(ordered))
     repaired_chronology = validate_chronological_order(phased)
+    completeness = _completeness_signals(phased, event_segments)
+    for coverage_warning in completeness.get("coverage_warnings", []):
+        if coverage_warning not in warnings:
+            warnings.append(coverage_warning)
     quality_report = _quality_report(
         len(original),
         phased,
@@ -771,6 +1030,8 @@ def clean_sop_steps(
         chronology_repaired or final_chronology["violations"] != [],
         event_segments,
         coverage_justification,
+        completeness,
+        phase_summary,
     )
     quality_report["chronological_order_valid"] = repaired_chronology["is_chronological"]
     return {

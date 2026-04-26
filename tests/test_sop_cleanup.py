@@ -114,6 +114,19 @@ class SopCleanupTests(unittest.TestCase):
         self.assertIn("Configure PivotTable fields", phases)
         self.assertIn("Build chart and slicer", phases)
 
+    def test_impossible_excel_phase_pairs_are_corrected(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(1, "Insert a PivotChart.", system="Excel"),
+                step(2, "Add a Region slicer.", system="Excel"),
+                step(3, "Apply the Region slicer to Los Angeles.", system="Excel"),
+            ]
+        )
+        self.assertEqual(
+            [item["phase"] for item in result["steps"]],
+            ["Build chart and slicer", "Build chart and slicer", "Validate final output"],
+        )
+
     def test_gold_standard_cleanup_is_demo_ready(self) -> None:
         result = clean_sop_steps(gold_steps())
         removed_numbers = {item["original_step_number"] for item in result["removed_steps"]}
@@ -148,6 +161,23 @@ class SopCleanupTests(unittest.TestCase):
             "Possible under-coverage: many workflow events were not represented as SOP steps.",
             result["quality_report"]["warnings"],
         )
+
+    def test_missing_percentage_configuration_blocks_demo_ready(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(1, "Open the sales data workbook in Excel."),
+                step(2, "Create a PivotTable from the selected table.", system="Excel"),
+                step(3, "Rename the percentage measure.", system="Excel", ocr="Show Values As Percentage"),
+                step(4, "Insert a PivotChart.", system="Excel", ocr="PivotChart"),
+                step(5, "Apply the Region slicer to Los Angeles.", system="Excel", ocr="Insert Slicer Region"),
+            ],
+            metadata={"event_segments": 8},
+        )
+        self.assertIn(
+            "Percentage measure configuration may be under-described.",
+            result["quality_report"]["missing_action_patterns"],
+        )
+        self.assertNotEqual(result["quality_report"]["readiness"], "demo_ready")
 
     def test_distinct_menu_and_dialog_confirmation_actions_are_preserved(self) -> None:
         result = clean_sop_steps(

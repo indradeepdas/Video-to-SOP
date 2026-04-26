@@ -33,6 +33,7 @@ def mark_risks(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
             step.get("confidence") != "high"
             or bool(SPECIFIC_ACTION_RE.search(text))
             or bool(EXACT_VALUE_RE.search(text))
+            or bool(step.get("coverage_review_required"))
             or (
                 step.get("rule_system")
                 and step.get("system")
@@ -61,6 +62,9 @@ def _call_verify(risky_steps: list[dict[str, Any]], model: str) -> list[dict[str
             "expected_output": step["expected_output"],
             "confidence": step["confidence"],
             "ocr": (step.get("ocr") or "")[:900],
+            "coverage_review_required": bool(step.get("coverage_review_required")),
+            "possible_missing_operation": bool(step.get("possible_missing_operation")),
+            "action_hint": step.get("action_hint"),
         }
         for step in risky_steps
     ]
@@ -69,6 +73,7 @@ Rules:
 - Remove exact values unless they are clearly a field label.
 - Do not invent clicks, saves, postings, names, or numbers.
 - Downgrade confidence when OCR/evidence is weak.
+- If coverage_review_required is true and the evidence suggests a dialog, configuration pane, chart, slicer, filter, or calculation change, prefer a conservative event-specific operational step over a generic review step.
 - Return only a JSON array with event_id, system, action, expected_output, confidence.
 """
     content: list[dict[str, Any]] = [

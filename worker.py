@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import traceback
 from pathlib import Path
 
@@ -15,9 +16,22 @@ from pipeline.video import extract_frames
 from storage.jobs import get_job, update_job
 
 
-def _process_name_from_file(path: str | Path) -> str:
-    stem = Path(path).stem.replace("_", " ").replace("-", " ").strip()
-    return " ".join(word.capitalize() for word in stem.split()) or "Recorded Process"
+def _process_name_from_file(path: str | Path, upload_name: str | None = None) -> str:
+    stem = Path(upload_name or path).stem.replace("_", " ").replace("-", " ").strip()
+    tokens = []
+    for token in stem.split():
+        lowered = token.lower()
+        if lowered in {"ytdown", "youtube", "media", "copy", "final"}:
+            continue
+        if re.fullmatch(r"\d{3,4}p", lowered):
+            continue
+        if re.fullmatch(r"\d{2,}", lowered):
+            continue
+        if len(token) >= 8 and any(char.isdigit() for char in token) and any(char.isalpha() for char in token):
+            continue
+        tokens.append(token)
+    cleaned = re.sub(r"\s+", " ", " ".join(tokens)).strip()
+    return " ".join(word.capitalize() for word in cleaned.split()) or "Recorded Process"
 
 
 def _write_json(path: Path, data) -> None:
@@ -41,7 +55,12 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
     base_meta = job.get("meta") or {}
     profile_meta = base_meta.get("quality_profile") or {}
     profile = get_profile(profile_meta.get("name") or DEFAULT_PROFILE)
-    process_name = base_meta.get("process_name") or _process_name_from_file(input_path)
+    process_name_source = base_meta.get("process_name_source")
+    upload_name = base_meta.get("upload_name") or base_meta.get("filename")
+    if process_name_source == "user" and str(base_meta.get("process_name", "")).strip():
+        process_name = str(base_meta.get("process_name", "")).strip()
+    else:
+        process_name = _process_name_from_file(input_path, upload_name=upload_name)
     department_notes = base_meta.get("department_notes", "")
     target_audience = base_meta.get("target_audience", "New employee")
 
@@ -144,6 +163,10 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                     "event_segments": len(events),
                     "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
                     "coverage_ratio_after_cleanup": cleanup["quality_report"].get("coverage_ratio_after_cleanup"),
+                    "coverage_warnings": cleanup["quality_report"].get("coverage_warnings", []),
+                    "readiness_blockers": cleanup["quality_report"].get("readiness_blockers", []),
+                    "passive_filler_removed_count": cleanup["quality_report"].get("passive_filler_removed_count", 0),
+                    "operational_checkpoint_count": cleanup["quality_report"].get("operational_checkpoint_count", 0),
                     "events": len(events),
                     "frames": len(frames),
                     "screen_states": len(segmentation.get("screen_states", [])),
@@ -182,6 +205,10 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                     "event_segments": len(events),
                     "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
                     "coverage_ratio_after_cleanup": cleanup["quality_report"].get("coverage_ratio_after_cleanup"),
+                    "coverage_warnings": cleanup["quality_report"].get("coverage_warnings", []),
+                    "readiness_blockers": cleanup["quality_report"].get("readiness_blockers", []),
+                    "passive_filler_removed_count": cleanup["quality_report"].get("passive_filler_removed_count", 0),
+                    "operational_checkpoint_count": cleanup["quality_report"].get("operational_checkpoint_count", 0),
                     "events": len(events),
                     "frames": len(frames),
                     "screen_states": len(segmentation.get("screen_states", [])),
@@ -241,6 +268,10 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                             "event_segments": len(fallback_events),
                             "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
                             "coverage_ratio_after_cleanup": cleanup["quality_report"].get("coverage_ratio_after_cleanup"),
+                            "coverage_warnings": cleanup["quality_report"].get("coverage_warnings", []),
+                            "readiness_blockers": cleanup["quality_report"].get("readiness_blockers", []),
+                            "passive_filler_removed_count": cleanup["quality_report"].get("passive_filler_removed_count", 0),
+                            "operational_checkpoint_count": cleanup["quality_report"].get("operational_checkpoint_count", 0),
                         }
                     ),
                 )
@@ -266,6 +297,10 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                             "event_segments": len(fallback_events),
                             "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
                             "coverage_ratio_after_cleanup": cleanup["quality_report"].get("coverage_ratio_after_cleanup"),
+                            "coverage_warnings": cleanup["quality_report"].get("coverage_warnings", []),
+                            "readiness_blockers": cleanup["quality_report"].get("readiness_blockers", []),
+                            "passive_filler_removed_count": cleanup["quality_report"].get("passive_filler_removed_count", 0),
+                            "operational_checkpoint_count": cleanup["quality_report"].get("operational_checkpoint_count", 0),
                             "warnings": warnings,
                         }
                     ),

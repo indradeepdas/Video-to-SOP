@@ -80,7 +80,9 @@ def main() -> None:
             handle.write(upload.getbuffer())
         metadata = {
             "filename": upload.name,
-            "process_name": process_name.strip() or Path(upload.name).stem.replace("_", " ").replace("-", " ").title(),
+            "upload_name": upload.name,
+            "process_name": process_name.strip(),
+            "process_name_source": "user" if process_name.strip() else "derived",
             "department_notes": department_notes.strip(),
             "target_audience": target_audience.strip() or "New employee",
             "quality_profile": profile_to_dict(profile),
@@ -150,6 +152,20 @@ def main() -> None:
                                 f"Coverage: {cleanup_report.get('step_count_after', 'unknown')} cleaned steps from "
                                 f"{cleanup_report.get('event_segments')} event segments."
                             )
+                        detail_cols = st.columns(2)
+                        detail_cols[0].metric(
+                            "Passive filler removed",
+                            cleanup_report.get("passive_filler_removed_count", 0),
+                        )
+                        detail_cols[1].metric(
+                            "Operational checkpoints kept",
+                            cleanup_report.get("operational_checkpoint_count", 0),
+                        )
+                        blockers = cleanup_report.get("readiness_blockers") or []
+                        if blockers:
+                            st.caption("Top blockers")
+                            for blocker in blockers[:5]:
+                                st.write(f"- {blocker}")
                     segmentation = meta.get("segmentation") or {}
                     if segmentation:
                         diag_cols = st.columns(3)

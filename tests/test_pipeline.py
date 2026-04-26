@@ -9,6 +9,7 @@ from pipeline.cluster import cluster_events, prune_events
 from pipeline.generate import _extract_json, generate_steps
 from pipeline.validate import group_phases, validate_steps
 from pipeline.verify import mark_risks, verify_steps
+from worker import _process_name_from_file
 
 
 class PipelineRuleTests(unittest.TestCase):
@@ -145,6 +146,13 @@ class PipelineRuleTests(unittest.TestCase):
         finally:
             if old_key:
                 os.environ["OPENAI_API_KEY"] = old_key
+
+    def test_process_name_normalization_strips_downloader_noise(self) -> None:
+        name = _process_name_from_file(
+            "input.mp4",
+            upload_name="YTDown_YouTube_Pivot-Table-Excel-Step-by-Step-Tutorial_Media_dvbLrwD2SpA_001_1080p.mp4",
+        )
+        self.assertEqual(name, "Pivot Table Excel Step By Step Tutorial")
 
 
 if __name__ == "__main__":

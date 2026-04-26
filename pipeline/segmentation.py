@@ -50,6 +50,16 @@ def _edge_delta(left: np.ndarray, right: np.ndarray) -> float:
     return float(np.mean(cv2.absdiff(left_edges, right_edges)) / 255.0)
 
 
+def _visual_structure_score(path: str) -> float:
+    gray = _read_gray(path, size=(260, 146))
+    if gray is None:
+        return 0.0
+    edges = cv2.Canny(gray, 80, 160)
+    edge_ratio = float(np.mean(edges) / 255.0)
+    contrast = float(np.std(gray) / 128.0)
+    return max(0.0, min(1.0, 0.65 * edge_ratio + 0.35 * min(1.0, contrast)))
+
+
 def _tokens(text: str) -> set[str]:
     return {token for token in re.findall(r"[a-z0-9]{3,}", text.lower())}
 
@@ -286,10 +296,58 @@ def _path_for_role(results: list[dict[str, Any]], role: str) -> str | None:
     return None
 
 
-def _best_evidence_role(role_text: dict[str, str]) -> str:
-    if not role_text:
-        return "stable_frame"
-    return max(role_text, key=lambda role: len(role_text.get(role, "")))
+def _ocr_strength(text: str) -> float:
+    tokens = _tokens(text)
+    if not tokens:
+        return 0.0
+    token_score = min(1.0, len(tokens) / 18.0)
+    char_score = min(1.0, len(text.strip()) / 180.0)
+    return max(0.0, min(1.0, 0.55 * token_score + 0.45 * char_score))
+
+
+def _dialog_signal(text: str) -> float:
+    lowered = text.lower()
+    if any(term in lowered for term in ["dialog", "pane", "fields", "values", "rows", "columns", "options", "slicer", "chart"]):
+        return 0.12
+    return 0.0
+
+
+def _pick_evidence_role(
+    segment: dict[str, Any],
+    role_text: dict[str, str],
+    results: list[dict[str, Any]],
+) -> tuple[str, float, float, str]:
+    if not results:
+        return "stable_frame", 0.0, 0.0, "default stable frame"
+
+    best_role = "stable_frame"
+    best_score = -1.0
+    best_ocr = 0.0
+    best_visual = 0.0
+    best_reason = "default stable frame"
+    for result in results:
+        role = str(result.get("evidence_role") or "stable_frame")
+        path = result.get("path") or segment.get(role)
+        text = role_text.get(role, "")
+        ocr_strength = _ocr_strength(text)
+        visual_structure = _visual_structure_score(path) if path else 0.0
+        role_bonus = 0.08 if role in {"entry_frame", "after_frame"} else 0.03
+        dialog_bonus = _dialog_signal(text)
+        score = 0.6 * ocr_strength + 0.3 * visual_structure + role_bonus + dialog_bonus
+        if ocr_strength == 0.0:
+            score = 0.7 * visual_structure + role_bonus + dialog_bonus
+        if score > best_score:
+            best_role = role
+            best_score = score
+            best_ocr = ocr_strength
+            best_visual = visual_structure
+            if ocr_strength > 0:
+                best_reason = f"{role} had the strongest OCR and structure evidence"
+            elif dialog_bonus > 0:
+                best_reason = f"{role} best exposed the visible dialog or configuration area"
+            else:
+                best_reason = f"{role} showed the richest visible screen structure"
+    return best_role, round(best_ocr, 3), round(best_visual, 3), best_reason
 
 
 def enrich_segments_with_ocr(
@@ -310,7 +368,7 @@ def enrich_segments_with_ocr(
         results = by_segment.get(int(segment["event_id"]), [])
         role_text = {result.get("evidence_role"): clean_text(result.get("raw_text", "")) for result in results}
         combined = "\n".join(text for text in role_text.values() if text)
-        best_role = _best_evidence_role(role_text)
+        best_role, ocr_strength, visual_structure, evidence_reason = _pick_evidence_role(segment, role_text, results)
         evidence_frame = _path_for_role(results, best_role) or segment.get("evidence_frame")
         system = classify_system(combined, segment.get("stable_frame", ""))
         text_delta = 1.0 - token_jaccard(previous_text, combined)
@@ -341,6 +399,9 @@ def enrich_segments_with_ocr(
                 "boundary_score": boundary_score,
                 "confidence_components": components,
                 "ocr_by_role": role_text,
+                "evidence_selection_reason": evidence_reason,
+                "ocr_strength": ocr_strength,
+                "visual_structure_score": visual_structure,
             }
         )
         previous_text = combined
@@ -527,6 +588,13 @@ def segment_frames(
     collapsed = reject_scroll_only_segments(smoothed)
     reviewed = review_ambiguous_boundaries(collapsed, max_reviews=ambiguous_reviews, model=model)
     final_segments = reviewed[:max_segments]
+    for index, segment in enumerate(final_segments):
+        previous_state = final_segments[index - 1].get("screen_state_id") if index > 0 else None
+        next_state = final_segments[index + 1].get("screen_state_id") if index + 1 < len(final_segments) else None
+        segment["dense_repeated_run"] = bool(
+            segment.get("screen_state_id")
+            and (segment.get("screen_state_id") == previous_state or segment.get("screen_state_id") == next_state)
+        )
     states = []
     seen_states = set()
     for segment in final_segments:

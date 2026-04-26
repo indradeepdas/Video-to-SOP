@@ -75,6 +75,10 @@ def main() -> int:
         "coverage_ratio_before_cleanup",
         "coverage_ratio_after_cleanup",
         "coverage_guardrail_triggered",
+        "coverage_warnings",
+        "readiness_blockers",
+        "operational_checkpoint_count",
+        "passive_filler_removed_count",
     }
     if not required_cleanup_fields.issubset(cleanup):
         print(job)
