@@ -69,6 +69,19 @@ def main() -> int:
     if not job or job.get("status") != "complete" or not output_path.exists():
         print(job)
         return 1
+    cleanup = (job.get("meta") or {}).get("cleanup_report") or {}
+    required_cleanup_fields = {
+        "event_segments",
+        "coverage_ratio_before_cleanup",
+        "coverage_ratio_after_cleanup",
+        "coverage_guardrail_triggered",
+    }
+    if not required_cleanup_fields.issubset(cleanup):
+        print(job)
+        return 1
+    if cleanup.get("coverage_guardrail_triggered") and cleanup.get("readiness") == "demo_ready":
+        print(job)
+        return 1
     print(f"Smoke test complete: {output_path}")
     return 0
 

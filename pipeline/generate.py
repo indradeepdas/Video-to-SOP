@@ -12,11 +12,14 @@ from typing import Any
 GENERATION_PROMPT = """You generate business SOP steps from segmented screen-recording evidence.
 
 Rules:
+- Return exactly one JSON object for every input event_id. Do not skip event_ids.
 - Treat one event_id as one possible SOP step produced by the segmentation engine.
+- Do not merge multiple event_ids into one conceptual SOP step.
 - Do not hallucinate clicks, typed values, names, or outcomes.
 - Only describe what is visible in segment screenshots and OCR.
 - Use stable_frame evidence first; before/after frames only provide context.
 - If uncertain, use conservative generic actions like Open, Display, Apply filter, Review, Export, or Save.
+- If an event appears operational but uncertain, produce a conservative event-specific step instead of repeating "Review the visible process screen."
 - Use business process language, not toolbar or menu noise.
 - Keep each action concise and usable by a new employee.
 - You may make a step generic or low confidence, but do not invent missing business actions.
@@ -80,18 +83,24 @@ def _call_openai(
     client = OpenAI()
     content: list[dict[str, Any]] = [{"type": "input_text", "text": GENERATION_PROMPT}]
     compact_events = []
-    for event in events:
+    for index, event in enumerate(events):
+        previous_event = events[index - 1] if index > 0 else {}
+        next_event = events[index + 1] if index + 1 < len(events) else {}
         compact_events.append(
             {
                 "event_id": event["event_id"],
                 "start_time_sec": round(float(event.get("start_time_sec", event.get("time_sec", 0))), 1),
                 "end_time_sec": round(float(event.get("end_time_sec", event.get("time_sec", 0))), 1),
                 "system_rule_guess": event.get("system", "Other"),
+                "previous_system_rule_guess": previous_event.get("system"),
+                "next_system_rule_guess": next_event.get("system"),
                 "action_hint": event.get("action_hint", "review"),
                 "diff_score": round(float(event.get("diff_score", 0)), 4),
                 "boundary_score": round(float(event.get("boundary_score", 0)), 4),
                 "screen_state_id": event.get("screen_state_id"),
                 "ocr": (event.get("clean_text") or "")[:1200],
+                "previous_ocr": (previous_event.get("clean_text") or "")[:350],
+                "next_ocr": (next_event.get("clean_text") or "")[:350],
             }
         )
         for image_role, image_path in _image_parts_for_event(event, include_context_images):
@@ -140,6 +149,8 @@ def _fallback_action(event: dict[str, Any]) -> dict[str, Any]:
     system = event.get("system") or "Other"
     text = (event.get("clean_text") or "").lower()
     hint = event.get("action_hint", "")
+    event_id = int(event.get("event_id", 0) or 0)
+    state = event.get("screen_state_id")
     if hint == "filter" or "filter" in text:
         action = "Apply or review the visible filter criteria."
         expected = "The filtered results are displayed for review."
@@ -161,9 +172,15 @@ def _fallback_action(event: dict[str, Any]) -> dict[str, Any]:
     elif system == "SAP":
         action = "Open or review the visible SAP transaction screen."
         expected = "The SAP screen displays the relevant process information."
+    elif hint == "navigation":
+        action = "Open or navigate to the visible process area."
+        expected = "The next process screen is available for review."
+    elif state is not None:
+        action = f"Review the process state shown at event {event_id}."
+        expected = f"Screen state {state} is visible for the next workflow action."
     else:
-        action = "Review the visible process screen."
-        expected = "The relevant process information is available on screen."
+        action = f"Review the visible process screen for event {event_id}."
+        expected = "The relevant process information is available for chronological review."
     return {
         "event_id": event["event_id"],
         "system": system,
@@ -200,13 +217,14 @@ def generate_steps(
         by_event = {int(item.get("event_id", -1)): item for item in generated if str(item.get("event_id", "")).isdigit()}
         for event in batch:
             item = by_event.get(int(event["event_id"])) or _fallback_action(event)
+            fallback = _fallback_action(event)
             all_steps.append(
                 {
                     "event_id": int(event["event_id"]),
                     "system": item.get("system") or event.get("system") or "Other",
-                    "action": str(item.get("action") or "").strip() or _fallback_action(event)["action"],
+                    "action": str(item.get("action") or "").strip() or fallback["action"],
                     "expected_output": str(item.get("expected_output") or "").strip()
-                    or _fallback_action(event)["expected_output"],
+                    or fallback["expected_output"],
                     "confidence": str(item.get("confidence") or "medium").lower()
                     if str(item.get("confidence") or "").lower() in ALLOWED_CONFIDENCE
                     else "medium",
@@ -222,7 +240,20 @@ def generate_steps(
                     "confidence_components": event.get("confidence_components", {}),
                     "action_hint": event.get("action_hint", "review"),
                     "rule_system": event.get("system", "Other"),
+                    "source_event_index": int(event["event_id"]),
                 }
             )
+
+    previous_signature = ""
+    run_length = 0
+    for step in all_steps:
+        signature = re.sub(r"\W+", " ", f"{step.get('system')} {step.get('action')} {step.get('expected_output')}".lower()).strip()
+        if signature == previous_signature:
+            run_length += 1
+        else:
+            previous_signature = signature
+            run_length = 1
+        if run_length >= 3 and "review the visible process screen" in signature:
+            step["weak_coverage_candidate"] = True
 
     return all_steps[:40]

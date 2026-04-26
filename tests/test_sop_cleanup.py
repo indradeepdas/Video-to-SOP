@@ -124,6 +124,43 @@ class SopCleanupTests(unittest.TestCase):
         self.assertGreaterEqual(result["quality_report"]["quality_score"], 80)
         self.assertEqual(result["quality_report"]["readiness"], "demo_ready")
 
+    def test_excel_benchmark_preserves_coverage_with_event_metadata(self) -> None:
+        result = clean_sop_steps(gold_steps(), metadata={"event_segments": 35})
+        actions = " ".join(item["action"] for item in result["steps"]).lower()
+        self.assertTrue(24 <= len(result["steps"]) <= 30)
+        self.assertIn("salesperson", actions)
+        self.assertIn("sales amount", actions)
+        self.assertIn("pivotchart", actions)
+        self.assertIn("region slicer", actions)
+        self.assertFalse(result["quality_report"]["coverage_guardrail_triggered"])
+        self.assertEqual(result["quality_report"]["readiness"], "demo_ready")
+
+    def test_under_coverage_blocks_demo_ready_and_warns(self) -> None:
+        result = clean_sop_steps(
+            [step(index, f"Complete operational action {index}.", system="Browser") for index in range(1, 14)],
+            metadata={"event_segments": 35},
+        )
+        self.assertEqual(result["quality_report"]["event_segments"], 35)
+        self.assertTrue(result["quality_report"]["coverage_guardrail_triggered"])
+        self.assertLess(result["quality_report"]["coverage_ratio_after_cleanup"], 0.60)
+        self.assertNotEqual(result["quality_report"]["readiness"], "demo_ready")
+        self.assertIn(
+            "Possible under-coverage: many workflow events were not represented as SOP steps.",
+            result["quality_report"]["warnings"],
+        )
+
+    def test_distinct_menu_and_dialog_confirmation_actions_are_preserved(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(1, "Open the Insert menu.", system="Excel"),
+                step(2, "Choose the PivotChart option.", system="Excel"),
+                step(3, "Confirm the PivotChart dialog settings.", system="Excel"),
+            ],
+            metadata={"event_segments": 3},
+        )
+        self.assertEqual([item["original_step_number"] for item in result["steps"]], [1, 2, 3])
+        self.assertEqual(result["merged_steps"], [])
+
     def test_noisy_output_needs_review_or_not_ready(self) -> None:
         result = clean_sop_steps(
             [
@@ -238,6 +275,24 @@ class SopCleanupTests(unittest.TestCase):
         self.assertIn("Navigate to record", result["phase_summary"]["phase_order"])
         self.assertIn("Validate result", result["phase_summary"]["phase_order"])
         self.assertIn("Export, save, or close process", result["phase_summary"]["phase_order"])
+
+    def test_generic_non_excel_workflow_preserves_coverage(self) -> None:
+        steps = [
+            step(1, "Open the customer web app.", system="Browser", start_time_seconds=0),
+            step(2, "Search for the customer record.", system="Browser", start_time_seconds=10),
+            step(3, "Open the customer profile.", system="Browser", start_time_seconds=20),
+            step(4, "Update the customer status field.", system="Browser", start_time_seconds=30),
+            step(5, "Update the customer priority field.", system="Browser", start_time_seconds=40),
+            step(6, "Apply the account settings change.", system="Browser", start_time_seconds=50),
+            step(7, "Submit the changes.", system="Browser", start_time_seconds=60),
+            step(8, "Validate that the confirmation message appears.", system="Browser", start_time_seconds=70),
+            step(9, "Export the customer report.", system="Browser", start_time_seconds=80),
+            step(10, "Review the presenter outro screen.", system="Browser", start_time_seconds=90),
+        ]
+        result = clean_sop_steps(steps, metadata={"event_segments": 10})
+        self.assertEqual([item["original_step_number"] for item in result["steps"]], list(range(1, 10)))
+        self.assertEqual(result["removed_steps"][0]["original_step_number"], 10)
+        self.assertFalse(result["quality_report"]["coverage_guardrail_triggered"])
 
     def test_business_validation_review_steps_are_preserved(self) -> None:
         result = clean_sop_steps(

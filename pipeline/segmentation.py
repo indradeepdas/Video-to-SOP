@@ -256,25 +256,40 @@ def build_initial_segments(
 def select_segment_evidence(segments: list[dict[str, Any]], max_frames: int) -> list[dict[str, Any]]:
     evidence = []
     seen_paths = set()
-    for segment in segments:
-        for key in ("entry_frame", "stable_frame", "after_frame"):
-            path = segment.get(key)
-            if path and path not in seen_paths and Path(path).exists():
-                seen_paths.add(path)
-                evidence.append(
-                    {
-                        "event_id": len(evidence) + 1,
-                        "segment_id": segment["event_id"],
-                        "evidence_role": key,
-                        "path": path,
-                        "time_sec": segment.get("time_sec", 0),
-                        "diff_score": segment.get("diff_score", 0),
-                        "image_hash": segment.get("image_hash", ""),
-                    }
-                )
-            if len(evidence) >= max_frames:
-                return evidence
+    roles_by_pass = (("stable_frame",), ("entry_frame", "after_frame"))
+    for roles in roles_by_pass:
+        for segment in segments:
+            for key in roles:
+                path = segment.get(key)
+                if path and path not in seen_paths and Path(path).exists():
+                    seen_paths.add(path)
+                    evidence.append(
+                        {
+                            "event_id": len(evidence) + 1,
+                            "segment_id": segment["event_id"],
+                            "evidence_role": key,
+                            "path": path,
+                            "time_sec": segment.get("time_sec", 0),
+                            "diff_score": segment.get("diff_score", 0),
+                            "image_hash": segment.get("image_hash", ""),
+                        }
+                    )
+                if len(evidence) >= max_frames:
+                    return evidence
     return evidence
+
+
+def _path_for_role(results: list[dict[str, Any]], role: str) -> str | None:
+    for result in results:
+        if result.get("evidence_role") == role:
+            return result.get("path")
+    return None
+
+
+def _best_evidence_role(role_text: dict[str, str]) -> str:
+    if not role_text:
+        return "stable_frame"
+    return max(role_text, key=lambda role: len(role_text.get(role, "")))
 
 
 def enrich_segments_with_ocr(
@@ -295,6 +310,8 @@ def enrich_segments_with_ocr(
         results = by_segment.get(int(segment["event_id"]), [])
         role_text = {result.get("evidence_role"): clean_text(result.get("raw_text", "")) for result in results}
         combined = "\n".join(text for text in role_text.values() if text)
+        best_role = _best_evidence_role(role_text)
+        evidence_frame = _path_for_role(results, best_role) or segment.get("evidence_frame")
         system = classify_system(combined, segment.get("stable_frame", ""))
         text_delta = 1.0 - token_jaccard(previous_text, combined)
         system_delta = 1.0 if previous_system != "Other" and system != previous_system else 0.0
@@ -319,6 +336,8 @@ def enrich_segments_with_ocr(
                 "ocr_text": combined,
                 "ocr_delta": text_delta,
                 "action_hint": action_hint,
+                "evidence_frame": evidence_frame,
+                "path": evidence_frame or segment.get("path"),
                 "boundary_score": boundary_score,
                 "confidence_components": components,
                 "ocr_by_role": role_text,
@@ -327,6 +346,22 @@ def enrich_segments_with_ocr(
         previous_text = combined
         previous_system = system
     return _assign_screen_states(enriched), ocr_results
+
+
+def smooth_system_continuity(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(segments) < 3:
+        return segments
+    out = [dict(segment) for segment in segments]
+    for index in range(1, len(out) - 1):
+        current = out[index]
+        if current.get("system") != "Other" or str(current.get("ocr_text", "")).strip():
+            continue
+        left = out[index - 1].get("system")
+        right = out[index + 1].get("system")
+        if left and left == right and left != "Other":
+            current["system"] = left
+            current["rule_system_inherited"] = True
+    return out
 
 
 def reject_scroll_only_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -488,7 +523,8 @@ def segment_frames(
     )
     initial = build_initial_segments(metrics, candidates, max_segments=max_segments)
     enriched, ocr_results = enrich_segments_with_ocr(initial, max_ocr_frames=max_ocr_frames, ocr_dir=ocr_dir)
-    collapsed = reject_scroll_only_segments(enriched)
+    smoothed = smooth_system_continuity(enriched)
+    collapsed = reject_scroll_only_segments(smoothed)
     reviewed = review_ambiguous_boundaries(collapsed, max_reviews=ambiguous_reviews, model=model)
     final_segments = reviewed[:max_segments]
     states = []

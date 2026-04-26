@@ -12,18 +12,66 @@ def _norm(text: str) -> str:
     return re.sub(r"\W+", " ", text.lower()).strip()
 
 
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _generic_review(action: str, expected: str) -> bool:
+    text = _norm(f"{action} {expected}")
+    return text in {
+        "review the visible process screen the relevant process information is available on screen",
+        "review the visible process screen the expected screen is displayed",
+    }
+
+
+def _nearby_duplicate(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_action = str(left.get("action") or "").strip()
+    right_action = str(right.get("action") or "").strip()
+    left_expected = str(left.get("expected_output") or "").strip()
+    right_expected = str(right.get("expected_output") or "").strip()
+    if left.get("system") != right.get("system"):
+        return False
+    if _norm(left_action) != _norm(right_action) or _norm(left_expected) != _norm(right_expected):
+        return False
+
+    same_screenshot = bool(left.get("screenshot") and left.get("screenshot") == right.get("screenshot"))
+    same_state = bool(left.get("screen_state_id") and left.get("screen_state_id") == right.get("screen_state_id"))
+    has_evidence_key = bool(left.get("screenshot") or right.get("screenshot") or left.get("screen_state_id") or right.get("screen_state_id"))
+    left_event = _coerce_int(left.get("source_event_index") or left.get("event_id"))
+    right_event = _coerce_int(right.get("source_event_index") or right.get("event_id"))
+    event_close = left_event is not None and right_event is not None and abs(right_event - left_event) <= 1
+    left_time = _coerce_float(left.get("start_time_sec") or left.get("time_sec"))
+    right_time = _coerce_float(right.get("start_time_sec") or right.get("time_sec"))
+    time_close = left_time is not None and right_time is not None and abs(right_time - left_time) <= 12
+
+    if _generic_review(left_action, left_expected):
+        return same_screenshot or same_state
+    if not has_evidence_key:
+        return event_close or time_close
+    return (same_screenshot or same_state) and (event_close or time_close)
+
+
 def validate_steps(steps: list[dict[str, Any]], max_steps: int = 40) -> list[dict[str, Any]]:
     valid = []
-    seen = set()
     for step in steps:
         action = str(step.get("action") or "").strip()
         expected = str(step.get("expected_output") or "").strip()
         if not action or TOOLBAR_ONLY.match(action):
             continue
-        signature = _norm(f"{step.get('system')} {action} {expected}")[:140]
-        if signature in seen:
-            continue
-        seen.add(signature)
 
         system = step.get("system") or step.get("rule_system") or "Other"
         rule_system = step.get("rule_system")
@@ -34,18 +82,20 @@ def validate_steps(steps: list[dict[str, Any]], max_steps: int = 40) -> list[dic
             system = rule_system
             confidence = "medium" if confidence == "high" else confidence
 
-        valid.append(
-            {
-                **step,
-                "step_number": len(valid) + 1,
-                "system": system,
-                "action": action,
-                "expected_output": expected,
-                "confidence": confidence,
-                "risky": bool(step.get("risky")),
-                "verified": bool(step.get("verified")),
-            }
-        )
+        normalized = {
+            **step,
+            "step_number": len(valid) + 1,
+            "system": system,
+            "action": action,
+            "expected_output": expected,
+            "confidence": confidence,
+            "risky": bool(step.get("risky")),
+            "verified": bool(step.get("verified")),
+            "source_event_index": step.get("source_event_index") or step.get("event_id"),
+        }
+        if valid and _nearby_duplicate(valid[-1], normalized):
+            continue
+        valid.append(normalized)
         if len(valid) >= max_steps:
             break
     return valid

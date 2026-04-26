@@ -105,6 +105,25 @@ class PipelineRuleTests(unittest.TestCase):
         phases = group_phases(valid)
         self.assertIn("Process in Excel", phases)
 
+    def test_validation_does_not_globally_collapse_repeated_event_rows(self) -> None:
+        steps = [
+            {
+                "event_id": index,
+                "system": "Other",
+                "rule_system": "Other",
+                "action": "Review the visible process screen.",
+                "expected_output": "The relevant process information is available on screen.",
+                "confidence": "low",
+                "screenshot": f"frame_{index}.jpg",
+                "screen_state_id": index,
+                "start_time_sec": float(index * 15),
+            }
+            for index in range(1, 36)
+        ]
+        valid = validate_steps(steps, max_steps=40)
+        self.assertEqual(len(valid), 35)
+        self.assertEqual(valid[20]["source_event_index"], 21)
+
     def test_model_json_robustness_and_fallback(self) -> None:
         parsed = _extract_json("```json\n[{\"event_id\":1,\"confidence\":\"weird\"}]\n```")
         self.assertEqual(parsed[0]["event_id"], 1)

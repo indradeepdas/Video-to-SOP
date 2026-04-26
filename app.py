@@ -122,12 +122,13 @@ def main() -> None:
                     }
                     st.write(f"Steps: {meta.get('steps', 'unknown')}")
                     if cleanup_report:
-                        quality_cols = st.columns(5)
+                        quality_cols = st.columns(6)
                         quality_cols[0].metric("Original steps", cleanup_report.get("step_count_before", "unknown"))
                         quality_cols[1].metric("Cleaned steps", cleanup_report.get("step_count_after", "unknown"))
                         quality_cols[2].metric("Removed", cleanup_report.get("removed_count", 0))
                         quality_cols[3].metric("Merged", cleanup_report.get("merged_count", 0))
-                        quality_cols[4].metric("Quality", cleanup_report.get("quality_score", "unknown"))
+                        quality_cols[4].metric("Coverage", cleanup_report.get("coverage_ratio_after_cleanup", "unknown"))
+                        quality_cols[5].metric("Quality", cleanup_report.get("quality_score", "unknown"))
                         readiness = cleanup_report.get("readiness", "needs_review")
                         label = readiness_labels.get(readiness, readiness)
                         chrono_ok = cleanup_report.get("chronological_order_valid")
@@ -143,6 +144,11 @@ def main() -> None:
                                 "Chronology: "
                                 + ("valid" if chrono_ok else "needs repair")
                                 + f" ({chrono_count} violation{'s' if chrono_count != 1 else ''} detected before cleanup)"
+                            )
+                        if cleanup_report.get("event_segments"):
+                            st.caption(
+                                f"Coverage: {cleanup_report.get('step_count_after', 'unknown')} cleaned steps from "
+                                f"{cleanup_report.get('event_segments')} event segments."
                             )
                     segmentation = meta.get("segmentation") or {}
                     if segmentation:

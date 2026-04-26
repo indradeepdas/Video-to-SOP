@@ -86,7 +86,6 @@ NOISE_PATTERNS = [
     r"\bend card\b",
     r"\bintro\b.*\btitle\b",
     r"\btitle screen\b",
-    r"\breview the visible process screen\b",
     r"\bscreen remains visible\b",
     r"\bpresenter outro remains visible\b",
 ]
@@ -129,6 +128,7 @@ VALIDATION_OUTPUT_TERMS = {
 
 GENERIC_PHASES = {"Process in Excel", "Validate"}
 TIME_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*s")
+UNDER_COVERAGE_WARNING = "Possible under-coverage: many workflow events were not represented as SOP steps."
 
 
 def _text(step: dict[str, Any]) -> str:
@@ -323,6 +323,17 @@ def _same_workflow_intent(left: dict[str, Any], right: dict[str, Any]) -> bool:
     return _jaccard(_text(left), _text(right)) > 0.72
 
 
+def _pivottable_setup_pair(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_text = _normalize(_text(left))
+    right_text = _normalize(_text(right))
+    return (
+        "pivottable setup" in left_text
+        and "create a new pivottable" in right_text
+        or "create a new pivottable" in left_text
+        and "pivottable setup" in right_text
+    )
+
+
 def _target_tokens(step: dict[str, Any]) -> set[str]:
     tokens = _tokens(_text(step))
     domain_terms = {
@@ -348,6 +359,22 @@ def _target_tokens(step: dict[str, Any]) -> set[str]:
     return tokens & domain_terms
 
 
+def _field_detail_tokens(step: dict[str, Any]) -> set[str]:
+    tokens = _tokens(_text(step))
+    detail_terms = {
+        "status",
+        "priority",
+        "salesperson",
+        "region",
+        "amount",
+        "percentage",
+        "measure",
+        "series",
+        "slicer",
+    }
+    return tokens & detail_terms
+
+
 def _distinct_pivot_field_operations(left: dict[str, Any], right: dict[str, Any]) -> bool:
     left_text = _normalize(str(left.get("action", "")))
     right_text = _normalize(str(right.get("action", "")))
@@ -357,6 +384,10 @@ def _distinct_pivot_field_operations(left: dict[str, Any], right: dict[str, Any]
     left_fields = {term for term in field_terms if term in left_text}
     right_fields = {term for term in field_terms if term in right_text}
     return bool(left_fields and right_fields and left_fields != right_fields)
+
+
+def _action_roots(step: dict[str, Any]) -> set[str]:
+    return {_verb_root(token) for token in re.findall(r"[a-z0-9]+", str(step.get("action", "")).lower())}
 
 
 def _is_duplicate_candidate(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -373,8 +404,18 @@ def _is_duplicate_candidate(left: dict[str, Any], right: dict[str, Any]) -> bool
     right_targets = _target_tokens(right)
     if left_targets and right_targets and not (left_targets & right_targets):
         return False
+    left_details = _field_detail_tokens(left)
+    right_details = _field_detail_tokens(right)
+    if left_details and right_details and left_details != right_details:
+        return False
+    left_roots = _action_roots(left) & MEANINGFUL_VERB_ROOTS
+    right_roots = _action_roots(right) & MEANINGFUL_VERB_ROOTS
+    same_intent = _same_workflow_intent(left, right)
+    action_similarity = _jaccard(str(left.get("action", "")), str(right.get("action", "")))
+    if left_roots and right_roots and left_roots != right_roots and action_similarity < 0.72 and not _pivottable_setup_pair(left, right):
+        return False
     expected_overlap = _jaccard(str(left.get("expected_output", "")), str(right.get("expected_output", ""))) > 0.45
-    return _same_workflow_intent(left, right) or expected_overlap and _jaccard(_text(left), _text(right)) > 0.55
+    return same_intent or expected_overlap and _jaccard(_text(left), _text(right)) > 0.55
 
 
 def _specificity_score(step: dict[str, Any]) -> int:
@@ -510,6 +551,39 @@ def _remaining_counts(steps: list[dict[str, Any]]) -> tuple[int, int, int]:
     return noise, passive, duplicates
 
 
+def _coverage_minimum(event_segments: int) -> int:
+    if event_segments >= 35:
+        return 24
+    if event_segments >= 30:
+        return 22
+    if event_segments >= 25:
+        return 18
+    return 0
+
+
+def _event_segments_from_metadata(metadata: dict[str, Any] | None) -> int:
+    if not metadata:
+        return 0
+    for key in ("event_segments", "events"):
+        value = metadata.get(key)
+        try:
+            if value is not None:
+                return int(value)
+        except Exception:
+            pass
+    segmentation = metadata.get("segmentation") or {}
+    try:
+        return int(segmentation.get("event_segments") or 0)
+    except Exception:
+        return 0
+
+
+def _coverage_justification(metadata: dict[str, Any] | None) -> str:
+    if not metadata:
+        return ""
+    return str(metadata.get("coverage_justification") or "").strip()
+
+
 def _quality_report(
     before_count: int,
     steps: list[dict[str, Any]],
@@ -518,15 +592,34 @@ def _quality_report(
     warnings: list[str],
     chronological_report: dict[str, Any],
     chronology_repaired: bool,
+    event_segments: int,
+    coverage_justification: str,
 ) -> dict[str, Any]:
     noise_count, passive_count, duplicate_count = _remaining_counts(steps)
     low_confidence_count = sum(1 for step in steps if step.get("confidence") != "high")
     generic_phase_count = sum(1 for step in steps if step.get("phase") in GENERIC_PHASES)
+    coverage_ratio_before = round(before_count / event_segments, 3) if event_segments else None
+    coverage_ratio_after = round(len(steps) / event_segments, 3) if event_segments else None
+    coverage_minimum = _coverage_minimum(event_segments)
+    raw_under_coverage = bool(event_segments and coverage_minimum and before_count < coverage_minimum)
+    final_under_coverage = bool(
+        event_segments
+        and (
+            len(steps) / event_segments < 0.60
+            or coverage_minimum
+            and len(steps) < coverage_minimum
+        )
+    )
+    coverage_guardrail_triggered = raw_under_coverage or final_under_coverage
     score = 100
     score -= 10 * noise_count
     score -= 5 * duplicate_count
     score -= 3 * max(0, passive_count - 2)
     score -= 2 * low_confidence_count
+    if raw_under_coverage:
+        score -= 30
+    if final_under_coverage:
+        score -= 35
     if not steps:
         score = 0
     elif len(steps) < 8:
@@ -543,9 +636,10 @@ def _quality_report(
     if generic_phase_count == len(steps) and steps:
         score -= 5
     score = max(0, min(100, score))
-    if score >= 80 and noise_count == 0 and chronological_valid:
+    coverage_blocks_demo = coverage_guardrail_triggered and not coverage_justification
+    if score >= 80 and noise_count == 0 and chronological_valid and not coverage_blocks_demo:
         readiness = "demo_ready"
-    elif score >= 80 and noise_count == 0 and chronology_repaired:
+    elif score >= 80 and noise_count == 0 and chronology_repaired and not coverage_blocks_demo:
         readiness = "demo_ready"
     elif score >= 60:
         readiness = "needs_review"
@@ -562,6 +656,11 @@ def _quality_report(
         "duplicate_candidate_count": duplicate_count,
         "chronological_order_valid": chronological_valid or chronology_repaired,
         "chronological_violations_count": chronological_violations_count,
+        "event_segments": event_segments,
+        "coverage_ratio_before_cleanup": coverage_ratio_before,
+        "coverage_ratio_after_cleanup": coverage_ratio_after,
+        "coverage_guardrail_triggered": coverage_guardrail_triggered,
+        "coverage_justification": coverage_justification,
         "quality_score": score,
         "readiness": readiness,
         "warnings": warnings,
@@ -574,6 +673,10 @@ def clean_sop_steps(
     max_steps: int | None = None,
 ) -> dict:
     original = [_normalize_ordering_metadata(step, index + 1) for index, step in enumerate(steps)]
+    event_segments = _event_segments_from_metadata(metadata)
+    coverage_justification = _coverage_justification(metadata)
+    coverage_minimum = _coverage_minimum(event_segments)
+    raw_under_coverage = bool(event_segments and coverage_minimum and len(original) < coverage_minimum)
     initial_chronology = validate_chronological_order(original)
     if not initial_chronology["is_chronological"]:
         original = sorted(original, key=_ordering_value)
@@ -602,7 +705,20 @@ def clean_sop_steps(
     warnings: list[str] = []
     if chronology_repaired:
         warnings.append("Chronological order was repaired before cleanup.")
-    if reduction_ratio > 0.40:
+    projected_after_removal = len(original) - len(candidate_removed)
+    cleanup_would_under_cover = bool(event_segments >= 25 and projected_after_removal / event_segments < 0.60)
+    if raw_under_coverage or cleanup_would_under_cover:
+        warnings.append(UNDER_COVERAGE_WARNING)
+        if not coverage_justification:
+            warnings.append("Cleanup stayed conservative because removing borderline steps would leave too little event coverage.")
+        kept = []
+        removed_steps = hard_removed
+        hard_removed_numbers = {item["original_step_number"] for item in hard_removed}
+        for step in original:
+            number = step.get("original_step_number")
+            if number not in hard_removed_numbers:
+                kept.append(step)
+    elif reduction_ratio > 0.40 and len(original) >= 5:
         warnings.append("Cleanup was conservative because too many steps were at risk of removal.")
         kept = []
         removed_steps = hard_removed
@@ -628,10 +744,17 @@ def clean_sop_steps(
         merged.append(current)
         index += 1
 
+    if coverage_minimum and len(merged) < coverage_minimum <= len(kept):
+        warnings.append("Cleanup skipped borderline merging because it would leave too little event coverage.")
+        merged = kept
+        merged_records = []
+
     if max_steps is not None:
         merged = merged[:max_steps]
 
     ordered = sorted(merged, key=_ordering_value)
+    if event_segments and ordered and len(ordered) / event_segments < 0.60 and UNDER_COVERAGE_WARNING not in warnings:
+        warnings.append(UNDER_COVERAGE_WARNING)
     final_chronology = validate_chronological_order(ordered)
     if not final_chronology["is_chronological"]:
         warnings.append("Chronological order required final repair.")
@@ -646,6 +769,8 @@ def clean_sop_steps(
         warnings,
         initial_chronology,
         chronology_repaired or final_chronology["violations"] != [],
+        event_segments,
+        coverage_justification,
     )
     quality_report["chronological_order_valid"] = repaired_chronology["is_chronological"]
     return {

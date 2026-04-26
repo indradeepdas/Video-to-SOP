@@ -146,6 +146,13 @@ def export_docx(
         document.add_heading("Cleanup and quality report", level=1)
         document.add_paragraph(f"Original step count: {quality.get('step_count_before', 'unknown')}")
         document.add_paragraph(f"Cleaned step count: {quality.get('step_count_after', 'unknown')}")
+        document.add_paragraph(f"Event segments: {quality.get('event_segments', 'unknown')}")
+        document.add_paragraph(
+            f"Pre-cleanup coverage ratio: {quality.get('coverage_ratio_before_cleanup', 'unknown')}"
+        )
+        document.add_paragraph(
+            f"Final coverage ratio: {quality.get('coverage_ratio_after_cleanup', 'unknown')}"
+        )
         document.add_paragraph(f"Removed steps: {quality.get('removed_count', 0)}")
         document.add_paragraph(f"Merged steps: {quality.get('merged_count', 0)}")
         document.add_paragraph(f"Chronological order valid: {quality.get('chronological_order_valid', 'unknown')}")

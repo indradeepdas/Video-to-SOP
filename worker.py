@@ -98,7 +98,18 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
             valid_steps = validate_steps(generate_steps(events[:25], batch_size=profile.batch_size), max_steps=profile.max_steps)
         _write_json(artifacts_dir / "steps_validated.json", valid_steps)
 
-        cleanup = clean_sop_steps(valid_steps, metadata=base_meta, max_steps=profile.max_steps)
+        cleanup_metadata = {
+            **base_meta,
+            "event_segments": len(events),
+            "events": len(events),
+            "segmentation": {
+                "screen_states": len(segmentation.get("screen_states", [])),
+                "boundary_candidates": len(segmentation.get("boundary_candidates", [])),
+                "event_segments": len(events),
+                "threshold": segmentation.get("threshold_info", {}).get("threshold"),
+            },
+        }
+        cleanup = clean_sop_steps(valid_steps, metadata=cleanup_metadata, max_steps=profile.max_steps)
         final_steps = cleanup["steps"]
         _write_json(artifacts_dir / "sop_cleanup.json", cleanup)
         _write_json(artifacts_dir / "steps_final.json", final_steps)
@@ -130,6 +141,9 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                     "readiness": cleanup["quality_report"]["readiness"],
                     "cleanup_report": cleanup["quality_report"],
                     "phase_summary": cleanup["phase_summary"],
+                    "event_segments": len(events),
+                    "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
+                    "coverage_ratio_after_cleanup": cleanup["quality_report"].get("coverage_ratio_after_cleanup"),
                     "events": len(events),
                     "frames": len(frames),
                     "screen_states": len(segmentation.get("screen_states", [])),
@@ -165,6 +179,9 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                     "readiness": cleanup["quality_report"]["readiness"],
                     "cleanup_report": cleanup["quality_report"],
                     "phase_summary": cleanup["phase_summary"],
+                    "event_segments": len(events),
+                    "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
+                    "coverage_ratio_after_cleanup": cleanup["quality_report"].get("coverage_ratio_after_cleanup"),
                     "events": len(events),
                     "frames": len(frames),
                     "screen_states": len(segmentation.get("screen_states", [])),
@@ -191,7 +208,11 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                 fallback_events = json.loads((artifacts_dir / "classified.json").read_text(encoding="utf-8"))[:25]
             if fallback_events:
                 steps = validate_steps(generate_steps(fallback_events, batch_size=profile.batch_size), max_steps=profile.max_steps)
-                cleanup = clean_sop_steps(steps, metadata=base_meta, max_steps=profile.max_steps)
+                cleanup = clean_sop_steps(
+                    steps,
+                    metadata={**base_meta, "event_segments": len(fallback_events), "events": len(fallback_events)},
+                    max_steps=profile.max_steps,
+                )
                 final_steps = cleanup["steps"]
                 phases = group_phases(final_steps)
                 warnings = ["The SOP was produced using fallback handling after a pipeline error."]
@@ -217,6 +238,9 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                             "quality_score": cleanup["quality_report"]["quality_score"],
                             "readiness": cleanup["quality_report"]["readiness"],
                             "cleanup_report": cleanup["quality_report"],
+                            "event_segments": len(fallback_events),
+                            "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
+                            "coverage_ratio_after_cleanup": cleanup["quality_report"].get("coverage_ratio_after_cleanup"),
                         }
                     ),
                 )
@@ -239,6 +263,9 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                             "quality_score": cleanup["quality_report"]["quality_score"],
                             "readiness": cleanup["quality_report"]["readiness"],
                             "cleanup_report": cleanup["quality_report"],
+                            "event_segments": len(fallback_events),
+                            "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
+                            "coverage_ratio_after_cleanup": cleanup["quality_report"].get("coverage_ratio_after_cleanup"),
                             "warnings": warnings,
                         }
                     ),
