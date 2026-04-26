@@ -1,18 +1,24 @@
 # Development Guide
 
+This guide reflects the current code after the recent upgrades for public-repo safety, adaptive segmentation, chronology-first cleanup, and SOP quality scoring.
+
 ## Local Setup
+
+Install dependencies:
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-Run the app:
+Start the app:
 
 ```powershell
 python -m streamlit run app.py
 ```
 
-Run checks:
+## Required Verification Commands
+
+These commands are the current baseline after any meaningful change:
 
 ```powershell
 python -m compileall app.py worker.py pipeline storage tests scripts
@@ -20,101 +26,227 @@ python -m unittest discover -s tests
 python scripts/smoke_test.py
 ```
 
+## Current Product Priorities
+
+The current MVP-quality focus is:
+
+1. Better screen-state segmentation.
+2. Better conservative step wording.
+3. Better deterministic cleanup and readiness scoring.
+4. Better docs and safer public-repo hygiene.
+
+The main last-mile quality gate now lives in [pipeline/sop_cleanup.py](<G:/My Drive/Video-to-SOP/pipeline/sop_cleanup.py>), not in the prompt alone.
+
 ## Development Principles
 
-- Keep local evidence processing first.
-- Use GPT only after local pruning.
-- Keep hard caps on frames, OCR, steps, and model calls.
-- Prefer conservative wording over hallucinated precision.
-- Always produce a DOCX when enough evidence exists.
-- Do not pad SOPs with invented steps.
+- Keep the architecture local-first.
+- Use GPT only after local evidence has been narrowed down.
+- Keep explicit caps on frames, OCR, events, steps, and model calls.
+- Preserve chronology above organizational tidiness.
+- Cleanup may remove or merge steps, but it must not reorder the actual workflow.
+- Prefer conservative cleanup over aggressive rewriting.
+- Never invent missing operational steps.
+- Never pad a weak SOP to make it look complete.
+- Keep the app usable without OpenAI.
 
-## Adding System Rules
+## Working In Specific Areas
 
-System rules live in `pipeline/classify.py`.
+### Segmentation
 
-Add terms to the relevant list, then add or update tests in `tests/test_pipeline.py`.
+Module:
 
-Classification should stay fast and deterministic. Avoid adding model calls for basic system detection.
+[pipeline/segmentation.py](<G:/My Drive/Video-to-SOP/pipeline/segmentation.py>)
 
-## Adding Action Hints
+Guidelines:
 
-Action hints live in `pipeline/cluster.py`.
+- preserve adaptive thresholding
+- keep dense frame scoring local
+- treat recurring states carefully
+- treat scroll collapse conservatively
+- keep GPT boundary review sparse and bounded
 
-Hints influence event scoring and fallback step language. Keep hints broad:
+### OCR
 
-- filter
-- export
-- data entry
-- review
-- post/save
-- navigation
+Modules:
 
-Avoid UI-specific hints like exact button names unless they are broadly useful.
+- [pipeline/ocr.py](<G:/My Drive/Video-to-SOP/pipeline/ocr.py>)
+- [pipeline/clean_ocr.py](<G:/My Drive/Video-to-SOP/pipeline/clean_ocr.py>)
 
-## Editing Prompts
+Guidelines:
 
-Generation prompt:
+- remember that `pytesseract` is only the Python bridge
+- do not assume native Tesseract exists
+- keep fallback behavior non-fatal
+- preserve business terms when cleaning OCR noise
 
-```text
-pipeline/generate.py
-```
+### System Classification
 
-Verification prompt:
+Module:
 
-```text
-pipeline/verify.py
-```
+[pipeline/classify.py](<G:/My Drive/Video-to-SOP/pipeline/classify.py>)
+
+Guidelines:
+
+- keep classification deterministic
+- add rules carefully
+- update tests when changing heuristics
+
+### SOP Cleanup
+
+Module:
+
+[pipeline/sop_cleanup.py](<G:/My Drive/Video-to-SOP/pipeline/sop_cleanup.py>)
+
+Guidelines:
+
+- chronology is the top invariant
+- do not move later steps into earlier phase groups
+- repeated phase sections are valid
+- remove only obvious non-operational noise or weak passive filler
+- preserve validation checkpoints
+- preserve screenshot links and timing metadata
+- keep merge logic time- and context-aware
+
+### DOCX Export
+
+Module:
+
+[pipeline/docx_export.py](<G:/My Drive/Video-to-SOP/pipeline/docx_export.py>)
+
+Guidelines:
+
+- render cleaned steps only
+- render phase sections in timeline order
+- allow repeated phase headings
+- keep the cleanup appendix in sync with the cleanup report schema
+- keep screenshot evidence lines aligned with actual step metadata
+
+### Worker Orchestration
+
+Module:
+
+[worker.py](<G:/My Drive/Video-to-SOP/worker.py>)
+
+Guidelines:
+
+- write artifacts as the pipeline progresses
+- update job progress and messages with meaningful stages
+- keep fallback generation working
+- keep `meta_json` aligned with what the UI and DOCX expect
+
+## Prompt Editing
+
+Prompt-bearing modules:
+
+- [pipeline/generate.py](<G:/My Drive/Video-to-SOP/pipeline/generate.py>)
+- [pipeline/verify.py](<G:/My Drive/Video-to-SOP/pipeline/verify.py>)
 
 Prompt changes should preserve:
 
-- JSON-only output.
-- visible-evidence-only rule.
-- no hallucinated clicks, values, or outcomes.
-- conservative generic action wording when uncertain.
+- JSON-only output
+- visible-evidence-only behavior
+- conservative generic wording under uncertainty
+- no hallucinated clicks, values, fields, or outcomes
+
+Do not move cleanup responsibilities into prompts if they can be handled deterministically afterward.
+
+## Current Tests
+
+[tests/test_pipeline.py](<G:/My Drive/Video-to-SOP/tests/test_pipeline.py>) covers:
+
+- OCR cleaning
+- system classification
+- event clustering basics
+- risk marking and no-API sanitization
+- validation and fallback phase grouping
+- model JSON parsing and fallback generation
+
+[tests/test_segmentation.py](<G:/My Drive/Video-to-SOP/tests/test_segmentation.py>) covers:
+
+- adaptive threshold selection
+- OCR token Jaccard behavior
+- scroll collapse
+- recurring screen-state handling
+- synthetic SAP-to-Excel-to-SAP segmentation
+
+[tests/test_sop_cleanup.py](<G:/My Drive/Video-to-SOP/tests/test_sop_cleanup.py>) covers:
+
+- presenter, outro, and social-noise removal
+- generic visible-screen filler removal
+- validation checkpoint preservation
+- conservative duplicate merging
+- no merge for distinct meaningful actions
+- PivotTable phase inference
+- repeated phase sections in timeline order
+- chronology validation and repair
+- generic non-Excel browser workflow cleanup
+- screenshot evidence preservation
+- readiness scoring
 
 ## Smoke Test
 
-`scripts/smoke_test.py` creates a synthetic video with SAP and Excel-like screens, runs the worker with `OPENAI_API_KEY` removed, and asserts that a DOCX exists.
+[scripts/smoke_test.py](<G:/My Drive/Video-to-SOP/scripts/smoke_test.py>) creates a synthetic local video, removes `OPENAI_API_KEY`, runs the worker, and asserts that a DOCX is produced.
 
-This test proves the local fallback path works.
+This proves:
 
-## Unit Tests
+- local-first fallback still works
+- worker orchestration still completes
+- cleanup and quality report still serialize
+- DOCX export still runs
 
-`tests/test_pipeline.py` covers:
+It does not prove that the output is product-quality for a real workflow video.
 
-- OCR cleaning.
-- system classification.
-- duplicate event filtering.
-- risk marking and no-API sanitization.
-- validation and phase grouping.
-- model JSON parsing and fallback generation.
+## Debugging A Real Job
 
-`tests/test_segmentation.py` covers:
+When debugging a real run, inspect:
 
-- adaptive segmentation thresholds.
-- OCR token Jaccard behavior.
-- scroll-only collapse.
-- screen-state recurrence.
-- synthetic SAP-to-Excel-to-SAP segmentation.
+```text
+jobs/{job_id}/artifacts/
+```
 
-`tests/test_sop_cleanup.py` covers:
+Most useful files:
 
-- presenter/outro/social noise removal.
-- passive review cleanup.
-- validation checkpoint preservation.
-- adjacent duplicate merging.
-- PivotTable phase assignment.
-- quality scoring and demo-readiness.
-- screenshot evidence preservation.
-- chronological order validation and repair.
-- repeated phase sections in timeline order.
-- generic non-Excel browser workflow cleanup.
+- `frame_metrics.json`
+- `boundary_candidates.json`
+- `screen_states.json`
+- `event_segments.json`
+- `segmentation_report.md`
+- `ocr_raw.json`
+- `steps_generated.json`
+- `steps_validated.json`
+- `sop_cleanup.json`
+- `steps_final.json`
 
-## Known Development Limits
+The normal failure chain to check is:
 
-- There is no multi-user queue.
-- Jobs run in local background threads.
-- Streamlit reruns the app script while job threads run.
-- SQLite stores job metadata but not large artifacts.
-- The app is intended for local hobbyist use, not hosted production.
+1. Did segmentation split the workflow sensibly?
+2. Did OCR capture enough useful business text?
+3. Did generation overproduce passive or duplicate steps?
+4. Did cleanup remove only weak noise and filler?
+5. Did the final readiness state match the actual quality?
+
+## Public GitHub Safety
+
+The repository is configured for safe public publishing if local artifacts remain ignored.
+
+Relevant files:
+
+- [.gitignore](<G:/My Drive/Video-to-SOP/.gitignore>)
+- [.env.example](<G:/My Drive/Video-to-SOP/.env.example>)
+
+Never stage:
+
+- `jobs/`
+- SQLite DBs
+- `.env`
+- Streamlit secrets
+- generated SOPs
+- local logs
+
+## Known Limits
+
+- The app is still local and single-user.
+- Jobs run in background threads, not through a robust external queue.
+- SQLite stores lightweight metadata only.
+- Streamlit reruns the script while worker threads are active.
+- The app remains an MVP-quality local tool, not a hosted platform.

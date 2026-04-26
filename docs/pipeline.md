@@ -1,46 +1,74 @@
 # Pipeline Details
 
-The pipeline is optimized for business SOP generation. It deliberately avoids trying to understand every pixel of every frame; instead it detects stable screen states and converts those states into evidence-backed task steps.
+The current pipeline is designed for business-process SOP generation. It does not attempt to label every frame in the recording. Instead, it identifies meaningful screen transitions, extracts bounded evidence, generates conservative steps, and then applies deterministic cleanup and quality control before export.
 
-## 1. Upload
+## 1. Upload And Job Creation
 
-The user uploads a recording in Streamlit. The file is saved as:
+The user uploads a recording in Streamlit. The file is written to:
 
 ```text
 jobs/{job_id}/input.mp4
 ```
 
-The job record stores process name, department/system notes, target audience, selected quality profile, and cost estimate.
+The initial job record also stores:
 
-## 2. Dense Frame Metrics
+- `process_name`
+- `department_notes`
+- `target_audience`
+- selected `quality_profile`
+- rough `cost_estimate`
 
-OpenCV samples the video for local boundary detection. Balanced mode uses a 1 second metric interval and caps metric frames at 2800.
+## 2. Dense Frame Extraction
 
-Each metric frame stores:
+The worker performs a dense local pass over the video using the selected profile's metric interval.
+
+Balanced profile values:
+
+- `metric_interval_seconds = 1.0`
+- `max_metric_frames = 2800`
+
+Each extracted frame record can include:
 
 - `frame_id`
 - `time_sec`
 - `path`
-- dimensions
-- grayscale visual `diff_score`
-- perceptual `image_hash`
+- `width`
+- `height`
+- `diff_score`
+- `image_hash`
 
 Frames are resized to a maximum width of 1280 pixels.
 
+Artifact:
+
+- `frames.json`
+
 ## 3. Adaptive Boundary Detection
 
-The segmentation engine computes a boundary score between adjacent sampled frames using:
+The segmentation engine computes a boundary score between adjacent dense frames. The current score is based on multiple local signals:
 
 - pixel absolute difference
 - SSIM structural change
-- edge-map change
+- edge-map delta
 - perceptual hash distance
 
-It then computes median/MAD and percentile thresholds for each video. Hysteresis prevents a noisy moment from producing multiple adjacent task boundaries.
+Thresholding is adaptive per job. The logic uses:
+
+- median boundary score
+- median absolute deviation (MAD)
+- percentile fallback
+- hysteresis so one noisy frame does not produce a burst of false boundaries
+
+Artifacts:
+
+- `frame_metrics.json`
+- `boundary_candidates.json`
 
 ## 4. Screen-State Segmentation
 
-Boundary candidates are converted into `EventSegment` objects. Each segment stores:
+Boundary candidates are converted into event segments. This is now the main evidence unit for SOP generation.
+
+Segments can carry:
 
 - `start_time_sec`
 - `end_time_sec`
@@ -52,37 +80,62 @@ Boundary candidates are converted into `EventSegment` objects. Each segment stor
 - `screen_state_id`
 - `confidence_components`
 
-Screen states combine system class, perceptual hash, OCR tokens, and boundary evidence after enrichment. Recurring screens can reappear later without being globally removed as duplicates.
+Artifacts:
+
+- `screen_states.json`
+- `event_segments.json`
+- `segmentation_report.md`
 
 ## 5. OCR
 
-OCR is capped by profile. Balanced mode runs OCR on at most 60 segment evidence frames.
+OCR is bounded by the selected profile and runs only on chosen evidence frames, not on every dense metric frame.
 
-When Tesseract is available:
+Balanced profile:
 
-- a preprocessed OCR image is written under `jobs/{job_id}/ocr`
-- text is extracted with two fast page segmentation modes
-- the longer result is kept
+- `max_ocr_frames = 60`
 
-When Tesseract is unavailable, the job continues. Segment confidence will usually be lower when both OCR and model vision evidence are weak.
+When native Tesseract is available:
+
+- preprocessed OCR images are written to `jobs/{job_id}/ocr`
+- OCR runs with multiple fast page segmentation strategies
+- the stronger text result is retained
+
+When native Tesseract is not available:
+
+- OCR text remains empty
+- the pipeline continues
+- later confidence is usually lower because OCR-supported evidence is missing
+
+Artifact:
+
+- `ocr_raw.json`
 
 ## 6. OCR Cleaning
 
-Cleaning removes common UI noise:
+OCR cleaning removes UI noise such as:
 
-- menu names
+- menus
 - toolbar labels
 - timestamps
-- repeated short lines
-- decorative separator text
+- decorative separators
+- repeated short UI fragments
 
-It keeps business terms such as supplier, invoice, payment, posting, Excel, export, status, account, tax, and reconciliation.
+It tries to preserve business-relevant terms such as:
+
+- invoice
+- supplier
+- payment
+- posting
+- export
+- reconciliation
+- amount
+- status
 
 ## 7. System Classification
 
-Classification is rule-based for speed and cost control.
+System classification is deterministic and rule-based.
 
-Supported systems:
+Supported classes:
 
 - SAP
 - Excel
@@ -93,110 +146,363 @@ Supported systems:
 - File Explorer
 - Other
 
-The model can still improve wording, but validation prevents obvious SAP/Excel mismatches when local evidence is stronger.
+Classification is used by:
 
-## 8. OCR/System Segment Enrichment
+- segmentation enrichment
+- later generation prompts
+- cleanup phase inference
+- final document labeling
 
-OCR text is attached back to each segment. Boundary scores are enriched with:
+## 8. Segment Enrichment
 
-- OCR text delta
-- system transition
+Each segment is enriched with:
+
+- cleaned OCR text
+- rule-based system class
+- OCR delta relative to nearby segments
 - local action hint
-- original visual boundary score
+- confidence components
 
-Action hints include filter, export, data entry, review, post/save, and navigation.
+Local action hints are broad and deterministic. They cover categories such as:
 
-## 9. Scroll Collapse And Event Pruning
+- navigation
+- filter
+- export
+- data entry
+- review
+- post or save
 
-Scroll-only segments are collapsed when they have the same system, similar OCR, and weak boundary evidence. Empty OCR is not allowed to create false similarity by itself.
+## 9. Scroll Collapse And Segment Pruning
 
-Balanced mode keeps at most 40 final event segments.
+The segmentation pipeline removes low-value fragmentation:
 
-## 10. Optional Ambiguous-Boundary Review
+- scroll-only segments can be collapsed
+- repeated same-state low-evidence fragments can be merged locally
+- recurring states later in the workflow are still preserved as revisits when they matter
 
-Balanced and Highest accuracy profiles can send a capped set of uncertain adjacent segment pairs to GPT vision. GPT may mark a pair as `keep` or `merge`.
+This stage is local and deterministic. It does not use GPT by default.
 
-This happens only after local segmentation and pruning. It is not the primary video segmentation engine.
+## 10. Optional Ambiguous Boundary Review
 
-## 11. SOP Generation
+Balanced and Highest accuracy profiles can send a capped set of uncertain neighboring segments to GPT vision. GPT only answers whether the local boundary should stay or collapse.
 
-Event segments are sent to GPT in compact batches. Balanced mode uses batches of 9 and caps total GPT calls at 6, reserving budget for ambiguous-boundary review and risky-step verification.
+This is intentionally narrow:
 
-The prompt instructs the model to:
+- it is not the main segmentation engine
+- it is capped by profile
+- it only applies after local pruning
 
-- treat each event as one possible SOP step
-- use stable segment evidence first
-- avoid hallucinated clicks or values
-- use generic actions when uncertain
+## 11. SOP Step Generation
+
+Event segments are sent to GPT in compact batches.
+
+Balanced profile uses:
+
+- `batch_size = 9`
+- `max_gpt_calls = 6`
+
+The generation prompt is constrained to:
+
+- treat one event as one possible SOP step
+- use stable evidence first
+- avoid hallucinated clicks, field values, and unsupported outcomes
+- choose generic wording when uncertain
 - return JSON only
 
-If the model fails or returns invalid JSON, the batch falls back to local step wording.
+If OpenAI is unavailable or returns invalid output, the pipeline falls back to local deterministic step wording.
+
+Artifact:
+
+- `steps_generated.json`
 
 ## 12. Risk Verification
 
-Risk rules flag steps when:
+Risk detection marks steps when:
 
 - confidence is not high
-- exact values appear
-- specific actions like click, type, save, post, or submit appear
-- model system and local system disagree
+- wording contains exact values
+- wording is too specific for the visible evidence
+- the model system and local rule-based system disagree
 
-Only capped risky rows are verified. Verification includes screenshot evidence where available.
+Only a capped number of risky rows are verified so API spend stays bounded.
+
+Artifact:
+
+- risk-reviewed output is persisted through `steps_validated.json`
 
 ## 13. Validation
 
-Validation enforces:
+Before cleanup, validation enforces:
 
-- no duplicate steps
-- no toolbar-only steps
+- no duplicate normalized steps
+- no obvious toolbar-only steps
 - max step count
 - known system names
-- local system correction for obvious mismatches
+- system correction when local rule-based classification is stronger
 
-The app does not create fake steps to reach a minimum count.
+Artifact:
 
-## 14. SOP Cleanup And Quality Control
+- `steps_validated.json`
 
-After verification and validation, Video2SOP runs a deterministic cleanup layer. This stage does not call OpenAI.
+## 14. Deterministic SOP Cleanup
 
-It removes obvious non-operational noise such as presenter outros, social banners, YouTube end cards, and generic visible-screen review steps. It also removes weak passive review-only steps unless they are true validation checkpoints.
+After validation, the pipeline runs [pipeline/sop_cleanup.py](<G:/My Drive/Video-to-SOP/pipeline/sop_cleanup.py>).
 
-Adjacent same-intent steps are merged conservatively when they have the same system, overlapping output, close evidence timing, and high token similarity. Distinct operational steps such as adding different PivotTable fields are preserved.
+This module:
 
-The cleanup stage preserves chronological order above phase neatness. It assigns a phase label per step, then renders phase headers only when the phase changes in the timeline. If a workflow returns to an earlier phase type later, that phase header appears again instead of moving later steps upward.
+- removes obvious non-operational intro, outro, presenter, and social-banner noise
+- removes weak passive review-only steps
+- preserves validation checkpoints that confirm a visible output
+- merges only conservative adjacent same-intent duplicates
+- preserves screenshot evidence fields
+- normalizes ordering metadata
+- validates chronology and repairs ordering when needed
+- assigns phase labels to each step
+- keeps repeated phases in timeline order
+- produces a quality score and readiness status
 
-The cleanup stage validates chronology, repairs ordering when metadata shows a violation, writes a quality score, and marks readiness as `demo_ready`, `needs_review`, or `not_ready`.
+The cleanup function returns:
+
+```python
+{
+  "steps": cleaned_steps,
+  "removed_steps": removed_steps,
+  "merged_steps": merged_steps,
+  "phase_summary": phase_summary,
+  "quality_report": quality_report,
+}
+```
+
+The helper `validate_chronological_order(steps)` returns:
+
+```python
+{
+  "is_chronological": bool,
+  "violations": list[dict],
+}
+```
+
+### Ordering Metadata
+
+Cleanup preserves or infers:
+
+- `original_step_number`
+- `source_event_index`
+- `start_time_seconds`
+- `end_time_seconds`
+- `screen_state`
+
+### Chronology Rule
+
+Chronology is the top invariant:
+
+- cleanup may remove steps
+- cleanup may merge steps
+- cleanup may assign phase labels
+- cleanup must never reorder the actual process into cleaner-looking phase buckets
+
+Ordering precedence is:
+
+1. `start_time_seconds`
+2. `source_event_index`
+3. `original_step_number`
+
+If chronology is broken before cleanup:
+
+- steps are repaired automatically
+- the issue is recorded in the quality report
+- chronology problems reduce the score
+
+### Cleanup Removal Rules
+
+Noise removal is universal. It targets:
+
+- intro and title cards with no workflow action
+- presenter-only screens
+- outro screens
+- social media follow banners
+- subscribe or like prompts
+- end cards
+- generic visible-screen filler
+
+Passive review removal targets weak fillers such as:
+
+- "review the visible process screen"
+- "review the worksheet data"
+- "review the screen"
+- "the screen is visible"
+
+Validation checkpoints are preserved when they confirm a visible outcome, for example:
+
+- "Validate that the report appears"
+- "Verify that the exported file is available"
+- "Confirm that the status changed to Posted"
+
+### Conservative Removal Guard
+
+If candidate cleanup would remove more than 40 percent of steps, cleanup becomes conservative:
+
+- obvious hard noise still comes out
+- borderline passive removals stop
+- the quality report adds:
+  - `Cleanup was conservative because too many steps were at risk of removal.`
+
+### Merge Rules
+
+Merge logic is universal and does not depend on fixed step numbers.
+
+Two steps can merge only when they are:
+
+- same system
+- adjacent or near-adjacent in sequence or time
+- similar in action or expected-output intent
+- not hiding a distinct meaningful operation
+
+The merge layer also checks target tokens and tries to avoid combining distinct PivotTable field operations or other clearly separate actions.
+
+### Phase Inference
+
+Cleanup assigns a phase label to each step. It does not globally regroup the SOP.
+
+The phase inference is deterministic and mostly action-driven:
+
+- generic:
+  - `Open or access process`
+  - `Prepare input data`
+  - `Configure records or fields`
+  - `Execute main action`
+  - `Review and validate`
+  - `Export, save, or close process`
+- browser-specific when strong cues exist:
+  - `Navigate to record`
+  - `Update fields`
+  - `Submit changes`
+  - `Validate result`
+  - `Export, save, or close process`
+- SAP-specific when strong cues exist:
+  - `Open transaction`
+  - `Enter document data`
+  - `Validate posting`
+  - `Save or post document`
+- Excel PivotTable-specific when the workflow is clearly detected:
+  - `Prepare source data`
+  - `Create Excel table`
+  - `Create PivotTable`
+  - `Configure PivotTable fields`
+  - `Add calculations and formatting`
+  - `Build chart and slicer`
+  - `Validate final output`
+
+### Quality Report
+
+Cleanup produces:
+
+- `step_count_before`
+- `step_count_after`
+- `removed_count`
+- `merged_count`
+- `low_confidence_count`
+- `passive_step_count`
+- `noise_step_count`
+- `duplicate_candidate_count`
+- `chronological_order_valid`
+- `chronological_violations_count`
+- `quality_score`
+- `readiness`
+- `warnings`
+
+Scoring starts at 100 and subtracts for:
+
+- remaining obvious noise
+- remaining adjacent duplicate candidates
+- excessive passive steps
+- low-confidence volume
+- very short final SOPs
+- high low-confidence ratio
+- chronology violations before repair
+- weak generic phase structure
+
+Readiness values are:
+
+- `demo_ready`
+- `needs_review`
+- `not_ready`
 
 Artifacts:
 
-- `steps_validated.json`: verified and schema-valid steps before cleanup.
-- `sop_cleanup.json`: removed steps, merged steps, phase summary, and quality report.
-- `steps_final.json`: final cleaned steps used in the DOCX.
+- `sop_cleanup.json`
+- `steps_final.json`
 
-## 15. Phase Grouping
+## 15. Chronological Phase Sections
 
-Steps are grouped into:
+The final SOP does not globally group all steps by phase label.
 
-- Access system
-- Extract data
-- Process in Excel
-- Validate
-- Post / Save
+Instead:
 
-Grouping is rule-based and uses system plus action text.
+- each cleaned step keeps its own phase
+- steps remain in chronological order
+- a phase heading is rendered only when the phase label changes in the timeline
+- the same phase can appear again later if the workflow returns to that type of work
+
+Example:
+
+```text
+Phase A
+  Step 1
+  Step 2
+Phase B
+  Step 3
+Phase C
+  Step 4
+Phase B
+  Step 5
+```
+
+This behavior matters because process documentation must reflect the real sequence, not a tidied abstraction.
 
 ## 16. DOCX Export
 
-The final DOCX includes:
+The DOCX is rendered from cleaned steps only.
+
+It includes:
 
 - summary
-- target audience
 - prerequisites
 - assumptions
 - evidence warnings
-- phase-grouped steps
-- screenshots with segment timestamp range
+- chronological phase sections
+- screenshot evidence
 - confidence indicators
-- low-confidence review checklist
+- low-confidence checklist
 - cleanup and quality report appendix
 - job metadata appendix
+
+The cleanup appendix includes:
+
+- original step count
+- cleaned step count
+- removed count
+- merged count
+- chronological order validity
+- chronology violation count
+- quality score
+- readiness
+- cleanup warnings
+- removed steps
+- merged steps
+
+## 17. Streamlit Completion View
+
+After job completion, the UI surfaces:
+
+- final step count
+- original step count
+- cleaned step count
+- removed count
+- merged count
+- quality score
+- readiness label
+- chronology validity and detected violation count
+- segmentation diagnostics
+
+This is the current user-facing quality gate for deciding whether the SOP is ready to use, needs manual review, or should be treated as not ready.
