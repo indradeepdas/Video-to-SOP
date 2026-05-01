@@ -34,6 +34,23 @@ python scripts\demo_run.py --use-openai
 
 The output should produce a DOCX path, step count, generation mode, readiness, and any blockers.
 
+## Benchmark A Real Video
+
+For a 7-9 minute showcase recording, run:
+
+```powershell
+python scripts\benchmark_job.py "C:\path\to\workflow-video.mp4" --profile "Showcase fast"
+```
+
+Check:
+
+- total runtime is close to the five-minute target on the showcase machine
+- event segments are not over-compressed
+- step density is credible for the video length
+- phase errors are zero
+- long single-step segments are zero or have clear blockers
+- readiness is `demo_ready` only when blockers are empty
+
 ## App Demo
 
 Run:

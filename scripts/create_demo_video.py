@@ -14,6 +14,8 @@ def _draw_screen(title: str, lines: list[str], accent: tuple[int, int, int]) -> 
     frame = np.full((540, 960, 3), 248, dtype=np.uint8)
     cv2.rectangle(frame, (0, 0), (960, 74), accent, -1)
     cv2.putText(frame, title, (32, 47), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+    cv2.rectangle(frame, (42, 92), (132, 490), accent, -1)
+    cv2.circle(frame, (88, 142), 26, (255, 255, 255), -1)
     cv2.rectangle(frame, (42, 112), (918, 470), (255, 255, 255), -1)
     cv2.rectangle(frame, (42, 112), (918, 470), (210, 215, 220), 2)
     y = 170
@@ -36,7 +38,7 @@ def build_demo_video(video_path: Path) -> Path:
         (
             "Customer Record",
             ["Open customer profile", "Review account owner and payment terms", "Last activity visible"],
-            (38, 92, 138),
+            (42, 112, 154),
         ),
         (
             "Edit Customer Fields",
@@ -46,7 +48,7 @@ def build_demo_video(video_path: Path) -> Path:
         (
             "Submission",
             ["Submit customer update", "Confirmation: Changes saved", "Audit entry created"],
-            (66, 117, 88),
+            (54, 142, 100),
         ),
         (
             "Reports",
@@ -56,12 +58,12 @@ def build_demo_video(video_path: Path) -> Path:
         (
             "Download Folder",
             ["Validate exported file", "customer_activity_report.xlsx", "Ready for review"],
-            (96, 91, 150),
+            (125, 82, 150),
         ),
     ]
     for title, lines, accent in screens:
         frame = _draw_screen(title, lines, accent)
-        for _ in range(2):
+        for _ in range(4):
             writer.write(frame)
     writer.release()
     return video_path

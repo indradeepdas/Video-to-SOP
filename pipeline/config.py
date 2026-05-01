@@ -23,9 +23,29 @@ class QualityProfile:
     verify_risky_limit: int
     include_context_images: bool
     ambiguous_boundary_reviews: int
+    max_segment_duration_seconds: float
+    target_event_density: float
 
 
 PROFILES: dict[str, QualityProfile] = {
+    "Showcase fast": QualityProfile(
+        name="Showcase fast",
+        metric_interval_seconds=1.25,
+        max_metric_frames=650,
+        frame_interval_seconds=5.0,
+        max_extracted_frames=650,
+        max_selected_frames=60,
+        max_ocr_frames=30,
+        max_events=36,
+        max_steps=40,
+        batch_size=12,
+        max_gpt_calls=4,
+        verify_risky_limit=8,
+        include_context_images=False,
+        ambiguous_boundary_reviews=0,
+        max_segment_duration_seconds=30.0,
+        target_event_density=3.0,
+    ),
     "Balanced": QualityProfile(
         name="Balanced",
         metric_interval_seconds=1.0,
@@ -41,6 +61,8 @@ PROFILES: dict[str, QualityProfile] = {
         verify_risky_limit=24,
         include_context_images=True,
         ambiguous_boundary_reviews=8,
+        max_segment_duration_seconds=30.0,
+        target_event_density=3.0,
     ),
     "Lowest cost": QualityProfile(
         name="Lowest cost",
@@ -57,6 +79,8 @@ PROFILES: dict[str, QualityProfile] = {
         verify_risky_limit=12,
         include_context_images=False,
         ambiguous_boundary_reviews=0,
+        max_segment_duration_seconds=45.0,
+        target_event_density=2.0,
     ),
     "Highest accuracy": QualityProfile(
         name="Highest accuracy",
@@ -73,11 +97,13 @@ PROFILES: dict[str, QualityProfile] = {
         verify_risky_limit=32,
         include_context_images=True,
         ambiguous_boundary_reviews=16,
+        max_segment_duration_seconds=24.0,
+        target_event_density=4.0,
     ),
 }
 
 
-DEFAULT_PROFILE = "Balanced"
+DEFAULT_PROFILE = "Showcase fast"
 DEFAULT_MODEL = "gpt-5.5"
 
 

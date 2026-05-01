@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import shutil
@@ -84,8 +85,12 @@ def _preprocess_for_ocr(image_path: str, output_path: str) -> str:
     image = cv2.imread(image_path)
     if image is None:
         return image_path
+    height, width = image.shape[:2]
+    if width > 1100:
+        scale = 1100 / float(width)
+        image = cv2.resize(image, (1100, max(1, int(height * scale))), interpolation=cv2.INTER_AREA)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    gray = cv2.resize(gray, None, fx=1.35, fy=1.35, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.resize(gray, None, fx=1.2, fy=1.2, interpolation=cv2.INTER_CUBIC)
     gray = cv2.bilateralFilter(gray, 5, 35, 35)
     threshold = cv2.adaptiveThreshold(
         gray,
@@ -109,9 +114,11 @@ def _ocr_with_tesseract(image_path: str) -> str:
 
     try:
         image = Image.open(image_path)
-        configs = ["--oem 3 --psm 6", "--oem 3 --psm 11"]
-        results = [pytesseract.image_to_string(image, config=config) or "" for config in configs]
-        return max(results, key=len, default="")
+        primary = pytesseract.image_to_string(image, config="--oem 3 --psm 6") or ""
+        if len(primary.strip()) >= 24:
+            return primary
+        secondary = pytesseract.image_to_string(image, config="--oem 3 --psm 11") or ""
+        return max([primary, secondary], key=len, default="")
     except Exception:
         return ""
 
@@ -131,20 +138,28 @@ def run_ocr(frames: list[dict[str, Any]], max_frames: int = 60, ocr_dir: str | P
         if frames[-1] not in ocr_frames:
             ocr_frames[-1] = frames[-1]
 
-    results = []
-    for event_index, frame in enumerate(ocr_frames, start=1):
+    def process_frame(item: tuple[int, dict[str, Any]]) -> dict[str, Any]:
+        event_index, frame = item
         path = str(Path(frame["path"]))
         ocr_image_path = path
         if ocr_dir and available:
             ocr_image_path = _preprocess_for_ocr(path, str(Path(ocr_dir) / f"ocr_{event_index:04d}.png"))
         raw_text = _ocr_with_tesseract(ocr_image_path) if available else ""
-        results.append(
-            {
-                **frame,
-                "event_id": event_index,
-                "raw_text": raw_text,
-                "ocr_available": available,
-                "ocr_image_path": ocr_image_path,
-            }
-        )
+        return {
+            **frame,
+            "event_id": event_index,
+            "raw_text": raw_text,
+            "ocr_available": available,
+            "ocr_image_path": ocr_image_path,
+        }
+
+    items = list(enumerate(ocr_frames, start=1))
+    if available and len(items) > 1:
+        workers = min(4, len(items), max(1, os.cpu_count() or 1))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            return list(executor.map(process_frame, items))
+
+    results = []
+    for item in items:
+        results.append(process_frame(item))
     return results

@@ -157,9 +157,44 @@ Try:
 - confirming the sidebar says `Mode: production vision`
 - installing native Tesseract
 - setting `OPENAI_API_KEY` in `.env`
-- using `Balanced` or `Highest accuracy`
+- using `Balanced` or `Highest accuracy` when `Showcase fast` is too sparse
 - recording at higher resolution
 - leaving each meaningful screen visible slightly longer
+
+## Readiness Is `needs_review` Because Step Density Is Low
+
+For production-vision videos longer than five minutes, the quality gate checks `workflow_density_score`.
+
+If the cleaned SOP has fewer than the profile target steps per minute, the report adds:
+
+```text
+Step density is too low for a production-vision workflow of this duration.
+```
+
+This is intentional. It prevents a short-looking SOP from being marked `demo_ready` when the video likely contains missing intermediate operations.
+
+Try:
+
+- checking `jobs/{job_id}/artifacts/event_segments.json` for very long segments
+- using `Balanced` or `Highest accuracy`
+- recording with brief pauses after important dialog/configuration changes
+- rerunning with a clearer process name and system notes
+
+## Long Segments Are Represented By One Broad Step
+
+If the cleanup report includes:
+
+```text
+One or more long workflow segments are represented by a single broad step.
+```
+
+then at least one segment over 45 seconds survived as one SOP row. This blocks `demo_ready` because the row may hide multiple operations.
+
+Use [scripts/benchmark_job.py](<G:/My Drive/Video-to-SOP/scripts/benchmark_job.py>) to inspect runtime and quality signals:
+
+```powershell
+python scripts\benchmark_job.py "C:\path\to\workflow-video.mp4" --profile "Showcase fast"
+```
 
 If many rows say “Review the process state shown,” the run likely used diagnostic fallback or had too little semantic evidence.
 
@@ -284,7 +319,9 @@ Runtime depends on:
 - OpenAI latency
 - selected profile
 
-For faster runs, use `Lowest cost`.
+For first-user showcase runs, use `Showcase fast`. It reduces metric frames, OCR frames, context images, boundary review, and risky verification while still splitting long non-scroll segments.
+
+For cheaper experiments, use `Lowest cost`.
 
 For stronger segmentation and review quality, use `Balanced` or `Highest accuracy`.
 

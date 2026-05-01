@@ -182,6 +182,10 @@ def export_docx(
             f"OpenAI calls: {quality.get('openai_calls_succeeded', 0)} / {quality.get('openai_calls_attempted', 0)}"
         )
         document.add_paragraph(f"Semantic coverage score: {quality.get('semantic_coverage_score', 'unknown')}")
+        document.add_paragraph(f"Workflow density score: {quality.get('workflow_density_score', 'unknown')}")
+        document.add_paragraph(f"Target event density: {quality.get('target_event_density', 'unknown')}")
+        document.add_paragraph(f"Long single-step segments: {quality.get('long_segment_single_step_count', 'unknown')}")
+        document.add_paragraph(f"Phase errors: {quality.get('phase_error_count', 'unknown')}")
         document.add_paragraph(f"Operational action count: {quality.get('operational_action_count', 'unknown')}")
         document.add_paragraph(f"Generic review count: {quality.get('generic_review_count', 'unknown')}")
         document.add_paragraph(f"Diagnostic step count: {quality.get('diagnostic_step_count', 'unknown')}")
@@ -193,6 +197,11 @@ def export_docx(
             document.add_paragraph(f"Warning: {warning}")
         for blocker in quality.get("readiness_blockers", []) or []:
             document.add_paragraph(f"Readiness blocker: {blocker}")
+        for item in quality.get("phase_error_examples", []) or []:
+            document.add_paragraph(
+                f"Phase issue: step {item.get('step_number')} was labeled {item.get('phase')}. "
+                f"Reason: {item.get('reason')}"
+            )
 
         removed = cleanup_report.get("removed_steps") or []
         if removed:

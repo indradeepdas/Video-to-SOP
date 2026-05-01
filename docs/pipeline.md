@@ -22,10 +22,10 @@ The initial job record also stores:
 
 The worker performs a dense local pass over the video using the selected profile's metric interval.
 
-Balanced profile values:
+Default `Showcase fast` profile values:
 
-- `metric_interval_seconds = 1.0`
-- `max_metric_frames = 2800`
+- `metric_interval_seconds = 1.25`
+- `max_metric_frames = 650`
 
 Each extracted frame record can include:
 
@@ -79,6 +79,12 @@ Segments can carry:
 - `boundary_score`
 - `screen_state_id`
 - `confidence_components`
+- `forced_split`
+- `evidence_selection_reason`
+- `ocr_strength`
+- `visual_structure_score`
+
+Long non-scroll spans are split before generation. `Showcase fast` and `Balanced` use `max_segment_duration_seconds = 30`, so an operational segment should not silently cover a minute or more of workflow activity. Scroll collapse remains conservative and avoids collapsing text/system states that contain operational terms such as fields, measures, charts, slicers, filters, dialogs, exports, submits, or saves.
 
 Artifacts:
 
@@ -90,15 +96,17 @@ Artifacts:
 
 OCR is bounded by the selected profile and runs only on chosen evidence frames, not on every dense metric frame.
 
-Balanced profile:
+Default `Showcase fast` profile:
 
-- `max_ocr_frames = 60`
+- `max_ocr_frames = 30`
 
 When native Tesseract is available:
 
 - preprocessed OCR images are written to `jobs/{job_id}/ocr`
-- OCR runs with multiple fast page segmentation strategies
-- the stronger text result is retained
+- OCR images are downscaled before preprocessing
+- OCR runs the primary fast page segmentation strategy first
+- a second strategy runs only when the primary result is weak
+- duplicate visual states are skipped when filling the OCR quota
 
 When native Tesseract is not available:
 
@@ -196,14 +204,18 @@ This is intentionally narrow:
 
 Event segments are sent to GPT in compact batches.
 
-Balanced profile uses:
+Default `Showcase fast` profile uses:
 
-- `batch_size = 9`
-- `max_gpt_calls = 6`
+- `batch_size = 12`
+- `max_gpt_calls = 4`
+- `include_context_images = False`
+
+`Balanced` and `Highest accuracy` keep smaller batches and more image/context budget for slower analysis runs.
 
 The generation prompt is constrained to:
 
 - treat one event as one possible SOP step
+- describe the specific visible action for long configuration segments
 - use stable evidence first
 - avoid hallucinated clicks, field values, and unsupported outcomes
 - choose generic wording when uncertain
@@ -407,8 +419,17 @@ Cleanup produces:
 - `duplicate_candidate_count`
 - `chronological_order_valid`
 - `chronological_violations_count`
+- `event_segments`
+- `coverage_ratio_before_cleanup`
+- `coverage_ratio_after_cleanup`
+- `workflow_density_score`
+- `target_event_density`
+- `long_segment_single_step_count`
+- `phase_error_count`
+- `phase_error_examples`
 - `quality_score`
 - `readiness`
+- `readiness_blockers`
 - `warnings`
 
 Scoring starts at 100 and subtracts for:
@@ -421,6 +442,12 @@ Scoring starts at 100 and subtracts for:
 - high low-confidence ratio
 - chronology violations before repair
 - weak generic phase structure
+- low coverage relative to detected event segments
+- low step density for production-vision videos longer than five minutes
+- long workflow segments represented by one broad step
+- impossible or implausible phase/action pairings
+
+`demo_ready` now requires both coverage and operational quality. A long production-vision run with too few steps per minute, remaining phase errors, diagnostic fallback rows, or long single-step segments is capped below `demo_ready` and reported as `needs_review` or `not_ready`.
 
 Readiness values are:
 

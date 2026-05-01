@@ -65,7 +65,9 @@ The codebase now includes the major upgrades shipped over the last two working d
   - `demo_ready`
   - `needs_review`
   - `not_ready`
-- Quality scoring considers low-confidence volume, noise, duplicate candidates, passive filler, and chronology violations.
+- Quality scoring considers low-confidence volume, noise, duplicate candidates, passive filler, chronology violations, event coverage, workflow step density, long single-step segments, and phase/action plausibility.
+- `Showcase fast` is the default public profile. It targets faster first-user runs by reducing redundant OCR, context images, boundary review, and verification volume while still splitting long non-scroll segments.
+- A production-vision SOP longer than five minutes cannot be `demo_ready` when too few steps represent the video, phase errors remain, or long workflow spans are reduced to one broad row.
 
 ## Current Pipeline
 

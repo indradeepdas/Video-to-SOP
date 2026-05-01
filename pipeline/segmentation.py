@@ -179,6 +179,79 @@ def _best_stable_frame(items: list[dict[str, Any]]) -> dict[str, Any]:
     return min(items, key=lambda item: (float(item.get("visual_score", 0.0)), -float(item.get("diff_score", 0.0))))
 
 
+def _make_segment(
+    metrics: list[dict[str, Any]],
+    start: int,
+    end: int,
+    boundary_score: float,
+    forced_split: bool = False,
+) -> dict[str, Any]:
+    items = _segment_slice(metrics, start, end)
+    entry = items[0]
+    stable = _best_stable_frame(items)
+    before = metrics[start - 1] if start > 0 else entry
+    after = metrics[end] if end < len(metrics) else stable
+    return {
+        "event_id": 0,
+        "start_time_sec": float(entry.get("time_sec", 0.0)),
+        "end_time_sec": float(items[-1].get("time_sec", entry.get("time_sec", 0.0))),
+        "time_sec": float(stable.get("time_sec", entry.get("time_sec", 0.0))),
+        "before_frame": before.get("path"),
+        "entry_frame": entry.get("path"),
+        "stable_frame": stable.get("path"),
+        "evidence_frame": stable.get("path"),
+        "after_frame": after.get("path"),
+        "path": stable.get("path"),
+        "boundary_score": boundary_score,
+        "visual_score": float(stable.get("visual_score", 0.0)),
+        "diff_score": float(stable.get("diff_score", 0.0)),
+        "image_hash": stable.get("image_hash", ""),
+        "segment_frame_count": len(items),
+        "confidence_components": stable.get("confidence_components", {}),
+        "forced_split": forced_split,
+    }
+
+
+def _split_span_indices(
+    metrics: list[dict[str, Any]],
+    start: int,
+    end: int,
+    max_duration_seconds: float,
+) -> list[tuple[int, int]]:
+    items = _segment_slice(metrics, start, end)
+    if not items or max_duration_seconds <= 0:
+        return [(start, end)]
+    duration = float(items[-1].get("time_sec", 0.0)) - float(items[0].get("time_sec", 0.0))
+    if duration <= max_duration_seconds:
+        return [(start, end)]
+
+    split_count = max(2, int(math.ceil(duration / max_duration_seconds)))
+    candidate_indices = [
+        int(item.get("metric_index", start))
+        for item in items[1:-1]
+        if float(item.get("boundary_score", item.get("visual_score", 0.0)) or 0.0) >= 0.01
+    ]
+    selected = set()
+    for split_number in range(1, split_count):
+        target_time = float(items[0].get("time_sec", 0.0)) + duration * split_number / split_count
+        if candidate_indices:
+            chosen = min(
+                candidate_indices,
+                key=lambda idx: (
+                    abs(float(metrics[idx].get("time_sec", 0.0)) - target_time),
+                    -float(metrics[idx].get("boundary_score", metrics[idx].get("visual_score", 0.0)) or 0.0),
+                ),
+            )
+        else:
+            chosen = min(end - 1, max(start + 1, int(round(start + (end - start) * split_number / split_count))))
+        if start < chosen < end:
+            selected.add(chosen)
+
+    boundaries = [start] + sorted(selected) + [end]
+    spans = [(left, right) for left, right in zip(boundaries, boundaries[1:]) if right > left]
+    return spans or [(start, end)]
+
+
 def _state_signature(segment: dict[str, Any]) -> str:
     tokens = sorted(list(_tokens(segment.get("ocr_text", ""))))[:10]
     image_hash = segment.get("image_hash", "")[:8]
@@ -220,6 +293,7 @@ def build_initial_segments(
     metrics: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
     max_segments: int,
+    max_segment_duration_seconds: float = 0.0,
 ) -> list[dict[str, Any]]:
     if not metrics:
         return []
@@ -233,46 +307,53 @@ def build_initial_segments(
         previous = boundary_index
     spans.append((previous, len(metrics), 0.0))
 
+    expanded: list[tuple[int, int, float, bool]] = []
+    for start, end, boundary_score in spans:
+        split_spans = _split_span_indices(metrics, start, end, max_segment_duration_seconds)
+        for split_start, split_end in split_spans:
+            expanded.append((split_start, split_end, boundary_score, len(split_spans) > 1))
+
+    if len(expanded) > max_segments:
+        expanded = sorted(
+            expanded,
+            key=lambda item: (
+                0 if item[0] == 0 else 1,
+                -float(metrics[item[0]].get("boundary_score", metrics[item[0]].get("visual_score", 0.0)) or 0.0),
+                item[0],
+            ),
+        )[:max_segments]
+        expanded = sorted(expanded, key=lambda item: item[0])
+
     segments: list[dict[str, Any]] = []
-    for start, end, boundary_score in spans[:max_segments]:
-        items = _segment_slice(metrics, start, end)
-        entry = items[0]
-        stable = _best_stable_frame(items)
-        before = metrics[start - 1] if start > 0 else entry
-        after = metrics[end] if end < len(metrics) else stable
-        segments.append(
-            {
-                "event_id": len(segments) + 1,
-                "start_time_sec": float(entry.get("time_sec", 0.0)),
-                "end_time_sec": float(items[-1].get("time_sec", entry.get("time_sec", 0.0))),
-                "time_sec": float(stable.get("time_sec", entry.get("time_sec", 0.0))),
-                "before_frame": before.get("path"),
-                "entry_frame": entry.get("path"),
-                "stable_frame": stable.get("path"),
-                "evidence_frame": stable.get("path"),
-                "after_frame": after.get("path"),
-                "path": stable.get("path"),
-                "boundary_score": boundary_score,
-                "visual_score": float(stable.get("visual_score", 0.0)),
-                "diff_score": float(stable.get("diff_score", 0.0)),
-                "image_hash": stable.get("image_hash", ""),
-                "segment_frame_count": len(items),
-                "confidence_components": stable.get("confidence_components", {}),
-            }
-        )
+    for start, end, boundary_score, forced_split in expanded[:max_segments]:
+        segment = _make_segment(metrics, start, end, boundary_score, forced_split=forced_split)
+        segment["event_id"] = len(segments) + 1
+        segments.append(segment)
     return segments
 
 
 def select_segment_evidence(segments: list[dict[str, Any]], max_frames: int) -> list[dict[str, Any]]:
     evidence = []
     seen_paths = set()
+    seen_hashes: list[str] = []
     roles_by_pass = (("stable_frame",), ("entry_frame", "after_frame"))
     for roles in roles_by_pass:
         for segment in segments:
             for key in roles:
                 path = segment.get(key)
                 if path and path not in seen_paths and Path(path).exists():
+                    image_hash = segment.get("image_hash", "")
+                    weak_duplicate = (
+                        image_hash
+                        and float(segment.get("boundary_score", 0.0) or 0.0) < 0.02
+                        and not segment.get("forced_split")
+                        and any(_hash_distance(image_hash, old_hash) <= 2 for old_hash in seen_hashes)
+                    )
+                    if weak_duplicate:
+                        continue
                     seen_paths.add(path)
+                    if image_hash:
+                        seen_hashes.append(image_hash)
                     evidence.append(
                         {
                             "event_id": len(evidence) + 1,
@@ -310,6 +391,32 @@ def _dialog_signal(text: str) -> float:
     if any(term in lowered for term in ["dialog", "pane", "fields", "values", "rows", "columns", "options", "slicer", "chart"]):
         return 0.12
     return 0.0
+
+
+def _operational_terms(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        term in lowered
+        for term in [
+            "field",
+            "measure",
+            "value",
+            "row",
+            "column",
+            "slicer",
+            "chart",
+            "filter",
+            "dialog",
+            "save",
+            "submit",
+            "post",
+            "export",
+            "download",
+            "insert",
+            "format",
+            "rename",
+        ]
+    )
 
 
 def _pick_evidence_role(
@@ -439,8 +546,9 @@ def reject_scroll_only_segments(segments: list[dict[str, Any]]) -> list[dict[str
         low_boundary = float(segment.get("boundary_score", 0.0)) < 0.12
         same_state = segment.get("screen_state_id") == previous.get("screen_state_id")
         visual_weak = float((segment.get("confidence_components") or {}).get("visual", 0.0) or 0.0) < 0.01
+        operational_text = _operational_terms(f"{current_text} {previous_text}")
         if has_text:
-            scroll_only = same_system and (text_close or same_state) and (low_boundary or same_state)
+            scroll_only = same_system and same_state and text_close and low_boundary and visual_weak and not operational_text
         else:
             scroll_only = same_system and same_state and visual_weak
         if scroll_only:
@@ -573,6 +681,7 @@ def segment_frames(
     ocr_dir: str | Path,
     ambiguous_reviews: int = 0,
     model: str = "gpt-5.5",
+    max_segment_duration_seconds: float = 0.0,
 ) -> dict[str, Any]:
     metrics = compute_frame_metrics(frames)
     duration = float(metrics[-1].get("time_sec", 0.0)) - float(metrics[0].get("time_sec", 0.0)) if len(metrics) > 1 else 0.0
@@ -582,7 +691,12 @@ def segment_frames(
         max_segments=max_segments,
         min_stable_seconds=min_stable_seconds,
     )
-    initial = build_initial_segments(metrics, candidates, max_segments=max_segments)
+    initial = build_initial_segments(
+        metrics,
+        candidates,
+        max_segments=max_segments,
+        max_segment_duration_seconds=max_segment_duration_seconds,
+    )
     enriched, ocr_results = enrich_segments_with_ocr(initial, max_ocr_frames=max_ocr_frames, ocr_dir=ocr_dir)
     smoothed = smooth_system_continuity(enriched)
     collapsed = reject_scroll_only_segments(smoothed)

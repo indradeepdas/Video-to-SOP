@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import traceback
 from pathlib import Path
 
@@ -65,6 +66,11 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
     department_notes = base_meta.get("department_notes", "")
     target_audience = base_meta.get("target_audience", "New employee")
     initial_capabilities = capability_status()
+    stage_timings: dict[str, float] = {}
+    job_started_at = time.perf_counter()
+
+    def mark_stage(name: str, started_at: float) -> None:
+        stage_timings[name] = round(time.perf_counter() - started_at, 3)
 
     def finish_meta(extra: dict) -> dict:
         merged = dict(base_meta)
@@ -74,15 +80,18 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
 
     try:
         update_job(db_path, job_id, status="running", progress=0.05, message="Extracting dense frame metrics")
+        stage_start = time.perf_counter()
         frames = extract_frames(
             input_path,
             frames_dir,
             interval_seconds=profile.metric_interval_seconds,
             max_frames=profile.max_metric_frames,
         )
+        mark_stage("extraction", stage_start)
         _write_json(artifacts_dir / "frames.json", frames)
 
         update_job(db_path, job_id, progress=0.24, message="Detecting adaptive screen boundaries")
+        stage_start = time.perf_counter()
         segmentation = segment_frames(
             frames,
             max_segments=profile.max_events,
@@ -90,7 +99,9 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
             ocr_dir=ocr_dir,
             ambiguous_reviews=profile.ambiguous_boundary_reviews,
             model=base_meta.get("cost_estimate", {}).get("model") or estimate_job_cost(profile)["model"],
+            max_segment_duration_seconds=profile.max_segment_duration_seconds,
         )
+        mark_stage("segmentation_ocr", stage_start)
         _write_json(artifacts_dir / "frame_metrics.json", segmentation["frame_metrics"])
         _write_json(artifacts_dir / "boundary_candidates.json", segmentation["boundary_candidates"])
         _write_json(artifacts_dir / "screen_states.json", segmentation["screen_states"])
@@ -108,6 +119,7 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
         generation_call_budget = max(1, profile.max_gpt_calls - reserved_gpt_calls)
 
         update_job(db_path, job_id, progress=0.68, message="Generating SOP steps from segments")
+        stage_start = time.perf_counter()
         generation_stats = {
             "openai_calls_attempted": 0,
             "openai_calls_succeeded": 0,
@@ -120,14 +132,19 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
             include_context_images=profile.include_context_images,
             run_stats=generation_stats,
         )
+        mark_stage("openai_generation", stage_start)
         _write_json(artifacts_dir / "steps_generated.json", steps)
 
         update_job(db_path, job_id, progress=0.80, message="Verifying risky steps")
+        stage_start = time.perf_counter()
         verified = verify_steps(steps, max_risky=profile.verify_risky_limit)
+        mark_stage("verification", stage_start)
+        stage_start = time.perf_counter()
         valid_steps = validate_steps(verified, max_steps=profile.max_steps)
         if not valid_steps:
             valid_steps = validate_steps(generate_steps(events[:25], batch_size=profile.batch_size), max_steps=profile.max_steps)
         _write_json(artifacts_dir / "steps_validated.json", valid_steps)
+        mark_stage("validation", stage_start)
 
         cleanup_metadata = {
             **base_meta,
@@ -148,12 +165,22 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                 "threshold": segmentation.get("threshold_info", {}).get("threshold"),
             },
         }
+        cleanup_metadata["video_duration_seconds"] = (
+            max((float(frame.get("time_sec", 0.0)) for frame in frames), default=0.0)
+            if frames
+            else 0.0
+        )
+        cleanup_metadata["target_event_density"] = profile.target_event_density
+        cleanup_metadata["stage_timings"] = stage_timings
+        stage_start = time.perf_counter()
         cleanup = clean_sop_steps(valid_steps, metadata=cleanup_metadata, max_steps=profile.max_steps)
+        mark_stage("cleanup", stage_start)
         final_steps = cleanup["steps"]
         _write_json(artifacts_dir / "sop_cleanup.json", cleanup)
         _write_json(artifacts_dir / "steps_final.json", final_steps)
 
         update_job(db_path, job_id, progress=0.90, message="Building DOCX")
+        stage_start = time.perf_counter()
         warnings = []
         if len(final_steps) < 25:
             warnings.append(
@@ -189,6 +216,8 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                     "ocr_non_empty_count": ocr_non_empty_count,
                     "phase_summary": cleanup["phase_summary"],
                     "event_segments": len(events),
+                    "video_duration_seconds": cleanup_metadata["video_duration_seconds"],
+                    "stage_timings": stage_timings,
                     "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
                     "coverage_ratio_after_cleanup": cleanup["quality_report"].get("coverage_ratio_after_cleanup"),
                     "coverage_warnings": cleanup["quality_report"].get("coverage_warnings", []),
@@ -210,6 +239,8 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                 }
             ),
         )
+        mark_stage("docx_export", stage_start)
+        stage_timings["total"] = round(time.perf_counter() - job_started_at, 3)
 
         update_job(
             db_path,
@@ -239,6 +270,9 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                     "ocr_non_empty_count": ocr_non_empty_count,
                     "phase_summary": cleanup["phase_summary"],
                     "event_segments": len(events),
+                    "video_duration_seconds": cleanup_metadata["video_duration_seconds"],
+                    "stage_timings": stage_timings,
+                    "total_runtime_seconds": stage_timings["total"],
                     "coverage_ratio_before_cleanup": cleanup["quality_report"].get("coverage_ratio_before_cleanup"),
                     "coverage_ratio_after_cleanup": cleanup["quality_report"].get("coverage_ratio_after_cleanup"),
                     "coverage_warnings": cleanup["quality_report"].get("coverage_warnings", []),

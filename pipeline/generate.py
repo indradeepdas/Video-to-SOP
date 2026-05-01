@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from pipeline.runtime_config import get_config, has_openai_key
+
 
 GENERATION_PROMPT = """You generate business SOP steps from segmented screen-recording evidence.
 
@@ -14,6 +16,7 @@ Rules:
 - Return exactly one JSON object for every input event_id. Do not skip event_ids.
 - Treat one event_id as one possible SOP step produced by the segmentation engine.
 - Do not merge multiple event_ids into one conceptual SOP step.
+- If an event spans a long configuration sequence, describe the most specific visible action for that event, not the whole sequence.
 - If a screenshot shows a dialog, pane, field configuration area, chart setup, slicer setup, or calculation setup that changes workflow state, describe that configuration action explicitly.
 - Do not compress a measure-add action and a rename action unless the evidence clearly shows one combined operation.
 - Prefer separate event-specific steps for actions such as adding a measure, changing a calculation, showing values as a percentage, renaming a field, inserting a chart, inserting a slicer, and applying a slicer selection when they appear across distinct events.
@@ -44,10 +47,27 @@ GENERIC_REVIEW_SIGNATURES = {
     "review the process screen shown",
 }
 
+KEY_TERM_RE = re.compile(
+    r"\b(pivottable|pivot\s+table|pivotchart|pivot\s+chart|slicer|field|fields|row|rows|column|columns|value|values|measure|percentage|sum|maximum|chart|filter|dialog|table|worksheet|export|submit|save)\b",
+    re.I,
+)
+
 
 def _encode_image(path: str) -> str:
-    with open(path, "rb") as handle:
-        return base64.b64encode(handle.read()).decode("utf-8")
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(path) as image:
+            image = image.convert("RGB")
+            image.thumbnail((960, 540))
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", quality=76, optimize=True)
+            return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    except Exception:
+        with open(path, "rb") as handle:
+            return base64.b64encode(handle.read()).decode("utf-8")
 
 
 def _extract_json(text: str) -> list[dict[str, Any]]:
@@ -108,6 +128,15 @@ def _call_openai(
                 "previous_screen_state_id": previous_event.get("screen_state_id"),
                 "next_screen_state_id": next_event.get("screen_state_id"),
                 "ocr": (event.get("clean_text") or "")[:1200],
+                "duration_seconds": round(
+                    float(event.get("end_time_sec", event.get("time_sec", 0)))
+                    - float(event.get("start_time_sec", event.get("time_sec", 0))),
+                    1,
+                ),
+                "forced_split": bool(event.get("forced_split")),
+                "ocr_key_terms": sorted({match.group(0).lower() for match in KEY_TERM_RE.finditer(event.get("clean_text") or "")})[:18],
+                "phase_intent_guess": event.get("phase_intent_guess"),
+                "evidence_selection_reason": event.get("evidence_selection_reason"),
                 "previous_ocr": (previous_event.get("clean_text") or "")[:350],
                 "next_ocr": (next_event.get("clean_text") or "")[:350],
                 "dense_repeated_run": bool(event.get("dense_repeated_run")),
@@ -164,12 +193,21 @@ def _fallback_action(event: dict[str, Any], openai_failed: bool = False) -> dict
     state = event.get("screen_state_id")
     generation_source = "local_ocr" if text.strip() else "diagnostic_fallback"
     diagnostic_only = generation_source == "diagnostic_fallback"
-    if hint == "filter" or "filter" in text:
-        action = "Apply or review the visible filter criteria."
-        expected = "The filtered results are displayed for review."
+    if "validate exported" in text or ("exported file" in text and ("ready" in text or "appears" in text)):
+        action = "Validate that the exported file is available."
+        expected = "The exported file is visible and ready for review."
     elif hint == "export" or "export" in text or "download" in text:
         action = "Export the displayed data."
         expected = "The data export is prepared or completed."
+    elif "submit" in text and ("confirmation" in text or "saved" in text):
+        action = "Submit the visible update and review the confirmation."
+        expected = "The system confirms that the update was saved."
+    elif "update" in text and any(term in text for term in ["field", "terms", "priority", "status", "owner"]):
+        action = "Update the visible process fields."
+        expected = "The visible fields reflect the required changes."
+    elif hint == "filter" or "filter" in text:
+        action = "Apply or review the visible filter criteria."
+        expected = "The filtered results are displayed for review."
     elif hint == "data entry":
         action = "Enter or review the visible business fields."
         expected = "The required fields are populated or ready for validation."
@@ -257,6 +295,19 @@ def _audit_generated_steps(steps: list[dict[str, Any]], events: list[dict[str, A
         ):
             step["coverage_review_required"] = True
 
+        duration = float(event.get("end_time_sec", event.get("time_sec", 0)) or 0) - float(
+            event.get("start_time_sec", event.get("time_sec", 0)) or 0
+        )
+        step["source_segment_duration_seconds"] = round(max(0.0, duration), 3)
+        if duration > 45:
+            step["long_segment_single_step"] = True
+            step["coverage_review_required"] = True
+        event_text = str(event.get("clean_text") or "").lower()
+        pivot_terms = any(term in event_text for term in ["field", "measure", "value", "percentage", "pivotchart", "slicer"])
+        if step.get("system") == "Excel" and pivot_terms and _looks_generic_review(action):
+            step["possible_missing_operation"] = True
+            step["coverage_review_required"] = True
+
 
 def generate_steps(
     events: list[dict[str, Any]],
@@ -322,6 +373,15 @@ def generate_steps(
                     "end_time_sec": event.get("end_time_sec", event.get("time_sec", 0)),
                     "boundary_score": event.get("boundary_score", 0),
                     "screen_state_id": event.get("screen_state_id"),
+                    "source_segment_duration_seconds": round(
+                        max(
+                            0.0,
+                            float(event.get("end_time_sec", event.get("time_sec", 0)) or 0)
+                            - float(event.get("start_time_sec", event.get("time_sec", 0)) or 0),
+                        ),
+                        3,
+                    ),
+                    "forced_split": bool(event.get("forced_split")),
                     "confidence_components": event.get("confidence_components", {}),
                     "action_hint": event.get("action_hint", "review"),
                     "rule_system": event.get("system", "Other"),
@@ -336,4 +396,3 @@ def generate_steps(
     _audit_generated_steps(all_steps, events)
 
     return all_steps[:40]
-from pipeline.runtime_config import get_config, has_openai_key

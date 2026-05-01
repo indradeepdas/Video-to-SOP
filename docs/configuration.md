@@ -81,10 +81,38 @@ Each profile defines:
 - `verify_risky_limit`
 - `include_context_images`
 - `ambiguous_boundary_reviews`
+- `max_segment_duration_seconds`
+- `target_event_density`
+
+### `Showcase fast`
+
+Default public profile intended for a fast, credible first run:
+
+- `metric_interval_seconds = 1.25`
+- `max_metric_frames = 650`
+- `frame_interval_seconds = 5.0`
+- `max_extracted_frames = 650`
+- `max_selected_frames = 60`
+- `max_ocr_frames = 30`
+- `max_events = 36`
+- `max_steps = 40`
+- `batch_size = 12`
+- `max_gpt_calls = 4`
+- `verify_risky_limit = 8`
+- `include_context_images = False`
+- `ambiguous_boundary_reviews = 0`
+- `max_segment_duration_seconds = 30.0`
+- `target_event_density = 3.0`
+
+Use when:
+
+- you want the fastest showcase path
+- you are testing the repo for the first time
+- you want bounded OpenAI usage without collapsing meaningful workflow steps
 
 ### `Balanced`
 
-Default profile intended for real usage:
+Higher-evidence profile intended for deeper real usage:
 
 - `metric_interval_seconds = 1.0`
 - `max_metric_frames = 2800`
@@ -99,12 +127,14 @@ Default profile intended for real usage:
 - `verify_risky_limit = 24`
 - `include_context_images = True`
 - `ambiguous_boundary_reviews = 8`
+- `max_segment_duration_seconds = 30.0`
+- `target_event_density = 3.0`
 
 Use when:
 
-- you want the current best default balance of quality and cost
 - the recording is moderately complex
 - you want cleanup and boundary review to have enough evidence
+- you accept slower runtime than `Showcase fast`
 
 ### `Lowest cost`
 
@@ -123,6 +153,8 @@ Cheapest profile:
 - `verify_risky_limit = 12`
 - `include_context_images = False`
 - `ambiguous_boundary_reviews = 0`
+- `max_segment_duration_seconds = 45.0`
+- `target_event_density = 2.0`
 
 Use when:
 
@@ -147,6 +179,8 @@ Most evidence-heavy bounded profile:
 - `verify_risky_limit = 32`
 - `include_context_images = True`
 - `ambiguous_boundary_reviews = 16`
+- `max_segment_duration_seconds = 24.0`
+- `target_event_density = 4.0`
 
 Use when:
 

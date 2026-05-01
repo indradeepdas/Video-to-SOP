@@ -13,6 +13,7 @@ from pipeline.segmentation import (
     find_boundary_candidates,
     reject_scroll_only_segments,
     segment_frames,
+    select_segment_evidence,
     token_jaccard,
 )
 from pipeline.video import _average_hash
@@ -115,6 +116,46 @@ class SegmentationTests(unittest.TestCase):
         candidates, _ = find_boundary_candidates(metrics, max_segments=4, min_stable_seconds=1)
         segments = build_initial_segments(metrics, candidates, max_segments=4)
         self.assertGreaterEqual(len(segments), 3)
+
+    def test_long_operational_span_is_forced_split(self) -> None:
+        metrics = [
+            {
+                "metric_index": i,
+                "time_sec": float(i * 10),
+                "path": f"frame_{i}.jpg",
+                "boundary_score": 0.04 if i in {3, 6, 9} else 0.005,
+                "visual_score": 0.03 if i in {3, 6, 9} else 0.004,
+                "diff_score": 0.01,
+                "image_hash": f"{i:016x}",
+                "confidence_components": {"visual": 0.03 if i in {3, 6, 9} else 0.004},
+            }
+            for i in range(13)
+        ]
+        segments = build_initial_segments(
+            metrics,
+            candidates=[],
+            max_segments=10,
+            max_segment_duration_seconds=30.0,
+        )
+        self.assertGreaterEqual(len(segments), 4)
+        self.assertTrue(any(segment.get("forced_split") for segment in segments))
+        self.assertLessEqual(max(segment["end_time_sec"] - segment["start_time_sec"] for segment in segments), 35.0)
+
+    def test_duplicate_hash_skip_keeps_high_boundary_segments_for_ocr(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = root / "first.jpg"
+            second = root / "second.jpg"
+            first.write_bytes(b"x")
+            second.write_bytes(b"y")
+            evidence = select_segment_evidence(
+                [
+                    {"event_id": 1, "stable_frame": str(first), "image_hash": "00ffffffffffffff", "boundary_score": 0.01},
+                    {"event_id": 2, "stable_frame": str(second), "image_hash": "00ffffffffffffff", "boundary_score": 0.31},
+                ],
+                max_frames=4,
+            )
+            self.assertEqual(len(evidence), 2)
 
 
 if __name__ == "__main__":

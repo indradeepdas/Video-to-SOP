@@ -191,6 +191,13 @@ def main() -> None:
                         semantic_cols[0].metric("Semantic coverage", cleanup_report.get("semantic_coverage_score", "unknown"))
                         semantic_cols[1].metric("Operational actions", cleanup_report.get("operational_action_count", 0))
                         semantic_cols[2].metric("Generic reviews", cleanup_report.get("generic_review_count", 0))
+                        runtime_cols = st.columns(3)
+                        runtime_cols[0].metric("Step density", cleanup_report.get("workflow_density_score", "unknown"))
+                        runtime_cols[1].metric("Phase errors", cleanup_report.get("phase_error_count", 0))
+                        timings = meta.get("stage_timings") or {}
+                        if timings:
+                            slowest = max(timings.items(), key=lambda item: float(item[1] or 0))
+                            runtime_cols[2].metric("Slowest stage", f"{slowest[0]} {slowest[1]}s")
                         blockers = cleanup_report.get("readiness_blockers") or []
                         if blockers:
                             st.caption("Top blockers")

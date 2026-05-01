@@ -78,3 +78,13 @@ Open the local URL shown by Streamlit, upload a screen recording, and confirm th
 - `Mode: production vision`
 
 If the app says `OCR draft` or `diagnostic only`, the output is not a production-grade SOP.
+
+## 7. Optional Benchmark Run
+
+Use this when validating a showcase video from the command line:
+
+```powershell
+python scripts\benchmark_job.py "C:\path\to\workflow-video.mp4" --profile "Showcase fast"
+```
+
+The report prints runtime, stage timings, event count, cleaned step count, workflow density, phase errors, long single-step segments, readiness, and blockers.

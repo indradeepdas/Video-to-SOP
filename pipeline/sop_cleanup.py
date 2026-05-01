@@ -572,6 +572,8 @@ def _review_category(
 
 
 def _phase_for_step(step: dict[str, Any], workflow_family: str) -> str:
+    action = _normalize(str(step.get("action", "")))
+    expected = _normalize(str(step.get("expected_output", "")))
     text = _normalize(_text(step))
     if workflow_family == "sap":
         if any(term in text for term in ["save", "post", "submit"]):
@@ -592,20 +594,58 @@ def _phase_for_step(step: dict[str, Any], workflow_family: str) -> str:
             return "Update fields"
         return "Navigate to record"
     if workflow_family == "excel_pivottable":
-        if any(term in text for term in ["pivotchart", "pivot chart", "chart", "slicer"]):
-            if any(term in text for term in ["apply", "review", "validate", "verify", "confirm"]):
+        if any(term in action for term in ["open the cookie sales data", "open the sales data", "open the workbook", "open the worksheet", "source data", "select the data range", "select the range"]):
+            return "Prepare source data"
+        if "table" in action and "pivottable" not in action and "pivot table" not in action and any(
+            term in action for term in ["format", "create", "confirm", "start creating"]
+        ):
+            return "Create Excel table"
+        if "insert tab" in action and ("pivottable" in action or "pivot table" in action):
+            return "Create PivotTable"
+        if "choose pivottable" in action or "choose pivot table" in action:
+            return "Create PivotTable"
+        if any(term in action for term in ["pivotchart", "pivot chart", "chart", "slicer", "insert slicers", "insert slicer"]):
+            if any(term in action for term in ["apply", "review", "validate", "verify", "confirm"]) and "insert" not in action and "open" not in action and "select" not in action:
                 return "Validate final output"
             return "Build chart and slicer"
-        if any(term in text for term in ["percentage", "measure", "rename", "format", "calculation", "sum", "maximum", "max"]):
+        if any(term in action for term in ["percentage", "measure", "rename", "calculation", "summarize", "sum", "maximum", "max"]):
             return "Add calculations and formatting"
-        if any(term in text for term in ["row field", "column field", "value field", "salesperson", "region", "rows area", "columns area", "move region", "reorder row"]):
+        if any(
+            term in action
+            for term in [
+                "row field",
+                "column field",
+                "value field",
+                "rows area",
+                "columns area",
+                "filters area",
+                "move region",
+                "reorder row",
+                "add salesperson",
+                "add region",
+                "add product",
+                "sales amount field",
+                "sales amount as a value",
+                "select the sales amount field",
+                "select the region field",
+                "select inside the pivottable",
+                "select inside the pivot table",
+                "expand the salesperson rows",
+            ]
+        ):
             return "Configure PivotTable fields"
-        if "pivottable" in text and any(term in text for term in ["create", "setup", "worksheet", "table"]):
+        if ("pivottable" in action or "pivot table" in action) and any(term in action for term in ["create", "setup", "worksheet", "blank", "confirm"]):
             return "Create PivotTable"
+        if "apply the product filter" in action or "apply product filter" in action:
+            return "Validate final output"
+        if "insert tab" in action:
+            return "Build chart and slicer"
         if "table" in text and "pivottable" not in text and any(term in text for term in ["create", "confirm", "formatted", "selected range", "headers"]):
             return "Create Excel table"
-        if any(term in text for term in ["validate", "verify", "summary", "totals", "result", "final output"]):
+        if any(term in action for term in ["validate", "verify", "summary", "totals", "result", "final output", "apply the region slicer"]):
             return "Validate final output"
+        if any(term in expected for term in ["slicer appears", "pivotchart appears", "chart updates"]):
+            return "Build chart and slicer"
         return "Prepare source data"
     if workflow_family == "excel":
         if any(term in text for term in ["export", "download", "save", "close"]):
@@ -631,10 +671,23 @@ def _phase_for_step(step: dict[str, Any], workflow_family: str) -> str:
 
 
 def _correct_phase_for_intent(step: dict[str, Any], phase: str, workflow_family: str) -> tuple[str, bool]:
+    action = _normalize(str(step.get("action", "")))
     text = _normalize(_text(step))
     corrected = phase
     if workflow_family == "excel_pivottable":
-        if "slicer" in text and any(term in text for term in ["apply", "review", "validate", "verify"]):
+        if any(term in action for term in ["open the worksheet", "open the workbook", "open the cookie sales data", "open the sales data"]):
+            corrected = "Prepare source data"
+        elif "table" in action and "pivottable" not in action and any(term in action for term in ["format", "create", "confirm"]):
+            corrected = "Create Excel table"
+        elif "insert tab" in action and ("pivottable" in action or "pivot table" in action):
+            corrected = "Create PivotTable"
+        elif "insert tab" in action and "table" in action:
+            corrected = "Create Excel table"
+        elif "insert tab" in action:
+            corrected = "Build chart and slicer"
+        elif any(term in action for term in ["select the sales amount field", "select the region field", "select inside the pivottable", "select inside the pivot table", "expand the salesperson rows", "add product to the pivottable filters area"]):
+            corrected = "Configure PivotTable fields"
+        elif "slicer" in text and any(term in action for term in ["apply", "review", "validate", "verify"]):
             corrected = "Validate final output"
         elif any(term in text for term in ["pivotchart", "pivot chart", "insert a pivotchart", "insert pivotchart"]):
             corrected = "Build chart and slicer"
@@ -647,6 +700,23 @@ def _correct_phase_for_intent(step: dict[str, Any], phase: str, workflow_family:
     return corrected, corrected != phase
 
 
+def _phase_error_for_step(step: dict[str, Any], phase: str, workflow_family: str) -> str | None:
+    if workflow_family != "excel_pivottable":
+        return None
+    action = _normalize(str(step.get("action", "")))
+    if any(term in action for term in ["open the worksheet", "open the workbook", "open the cookie sales data", "open the sales data"]) and phase == "Configure PivotTable fields":
+        return "Opening source data was labeled as PivotTable field configuration."
+    if "table" in action and "pivottable" not in action and "format" in action and phase == "Add calculations and formatting":
+        return "Formatting an Excel table was labeled as calculation/formatting instead of table creation."
+    if (
+        "insert tab" in action
+        and phase == "Create PivotTable"
+        and not any(term in action for term in ["pivottable", "pivot table", "choose", "create", "begin creating"])
+    ):
+        return "Opening the Insert tab was labeled as PivotTable creation."
+    return None
+
+
 def _apply_phases(steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     workflow_family = _workflow_family(steps)
     phase_counts: OrderedDict[str, int] = OrderedDict()
@@ -654,10 +724,21 @@ def _apply_phases(steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
     current_phase = None
     phased = []
     corrections = 0
+    phase_errors: list[dict[str, Any]] = []
     for step in steps:
         phase = _phase_for_step(step, workflow_family)
         phase, corrected = _correct_phase_for_intent(step, phase, workflow_family)
         corrections += int(corrected)
+        phase_error = _phase_error_for_step(step, phase, workflow_family)
+        if phase_error:
+            phase_errors.append(
+                {
+                    "step_number": step.get("step_number"),
+                    "action": step.get("action", ""),
+                    "phase": phase,
+                    "reason": phase_error,
+                }
+            )
         phase_counts[phase] = phase_counts.get(phase, 0) + 1
         if phase != current_phase:
             timeline_sections.append({"phase": phase, "start_step_number": step.get("step_number")})
@@ -669,6 +750,8 @@ def _apply_phases(steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], di
         "timeline_sections": timeline_sections,
         "workflow_type": workflow_family,
         "phase_corrections": corrections,
+        "phase_errors": phase_errors,
+        "phase_error_count": len(phase_errors),
     }
 
 
@@ -791,9 +874,29 @@ def _completeness_signals(steps: list[dict[str, Any]], event_segments: int) -> d
                 ]
             ):
                 missing_action_patterns.append("Percentage measure configuration may be under-described.")
-        if "slicer" in combined_text and "apply the region slicer" not in actions_text and "apply the slicer" not in actions_text:
+        slicer_applied = "slicer" in actions_text and any(
+            phrase in actions_text
+            for phrase in [
+                "apply a region slicer",
+                "apply the region slicer",
+                "apply the slicer",
+                "use the region slicer",
+                "show all regions",
+            ]
+        )
+        if "slicer" in combined_text and not slicer_applied:
             missing_action_patterns.append("Slicer application appears in the evidence but is not described operationally.")
-        if "pivotchart" in combined_text and "insert a pivotchart" not in actions_text and "insert pivotchart" not in actions_text:
+        pivotchart_created = "pivotchart" in actions_text and any(
+            phrase in actions_text
+            for phrase in [
+                "insert a pivotchart",
+                "insert pivotchart",
+                "display a pivotchart",
+                "pivotchart appears",
+                "add the sales amount measure back to the pivotchart",
+            ]
+        )
+        if "pivotchart" in combined_text and not pivotchart_created:
             missing_action_patterns.append("PivotChart creation appears in the evidence but is not described clearly.")
     return {
         "coverage_warnings": warnings,
@@ -848,6 +951,26 @@ def _quality_report(
         1 for item in removed_steps if "passive" in str(item.get("reason", "")).lower() or "duplicated passive" in str(item.get("reason", "")).lower()
     )
     generic_phase_count = sum(1 for step in steps if step.get("phase") in GENERIC_PHASES)
+    phase_error_examples = list(phase_summary.get("phase_errors") or [])
+    phase_error_count = int(phase_summary.get("phase_error_count") or len(phase_error_examples))
+    long_segment_single_step_count = sum(
+        1
+        for step in steps
+        if step.get("long_segment_single_step") or float(step.get("source_segment_duration_seconds", 0) or 0) > 45
+    )
+    video_duration_seconds = float(metadata.get("video_duration_seconds") or 0.0)
+    if not video_duration_seconds and steps:
+        ends = [
+            _coerce_float(step.get("end_time_seconds"))
+            or _coerce_float(step.get("end_time_sec"))
+            or _coerce_float(step.get("time_sec"))
+            or 0.0
+            for step in steps
+        ]
+        video_duration_seconds = max(ends, default=0.0)
+    video_minutes = video_duration_seconds / 60.0 if video_duration_seconds else 0.0
+    target_event_density = float(metadata.get("target_event_density") or 3.0)
+    workflow_density_score = round(len(steps) / video_minutes, 3) if video_minutes else None
     coverage_ratio_before = round(before_count / event_segments, 3) if event_segments else None
     coverage_ratio_after = round(len(steps) / event_segments, 3) if event_segments else None
     coverage_minimum = _coverage_minimum(event_segments)
@@ -890,6 +1013,26 @@ def _quality_report(
         score -= 5
     if generic_phase_count == len(steps) and steps:
         score -= 5
+    if phase_error_count:
+        score -= 20
+    generation_mode = str(metadata.get("generation_mode") or "unknown")
+    density_shortfall = bool(
+        generation_mode == "production_vision"
+        and video_minutes > 5
+        and workflow_density_score is not None
+        and workflow_density_score < target_event_density
+        and not coverage_justification
+    )
+    if density_shortfall:
+        score -= 25
+    if long_segment_single_step_count:
+        score -= min(30, 10 * long_segment_single_step_count)
+    if phase_error_count:
+        score = min(score, 79)
+    if density_shortfall:
+        score = min(score, 79)
+    if completeness.get("missing_action_patterns"):
+        score = min(score, 69)
     score = max(0, min(100, score))
     coverage_blocks_demo = coverage_guardrail_triggered and not coverage_justification
     readiness_blockers: list[str] = []
@@ -935,6 +1078,12 @@ def _quality_report(
         readiness_blockers.extend(completeness["missing_action_patterns"])
     if phase_summary.get("phase_corrections", 0) >= 3:
         warnings.append("Multiple phase labels were corrected to match action intent.")
+    if phase_error_count:
+        readiness_blockers.append("One or more phase labels conflict with the visible action intent.")
+    if density_shortfall:
+        readiness_blockers.append("Step density is too low for a production-vision workflow of this duration.")
+    if long_segment_single_step_count:
+        readiness_blockers.append("One or more long workflow segments are represented by a single broad step.")
 
     coverage_gate = not medium_long_coverage_shortfall and not coverage_blocks_demo and not raw_under_coverage
     operational_gate = not noise_count and (chronological_valid or chronology_repaired) and not completeness.get("missing_action_patterns")
@@ -963,6 +1112,12 @@ def _quality_report(
         "coverage_ratio_after_cleanup": coverage_ratio_after,
         "coverage_guardrail_triggered": coverage_guardrail_triggered,
         "coverage_justification": coverage_justification,
+        "video_duration_seconds": round(video_duration_seconds, 3),
+        "workflow_density_score": workflow_density_score,
+        "target_event_density": target_event_density,
+        "long_segment_single_step_count": long_segment_single_step_count,
+        "phase_error_count": phase_error_count,
+        "phase_error_examples": phase_error_examples[:5],
         "operational_checkpoint_count": operational_checkpoint_count,
         "contextual_review_count": contextual_review_count,
         "passive_filler_removed_count": passive_filler_removed_count,

@@ -53,6 +53,9 @@ def main() -> int:
     print(f"Generic reviews: {quality.get('generic_review_count', generic_review)}")
     print(f"Diagnostic steps: {quality.get('diagnostic_step_count', diagnostic)}")
     print(f"Semantic coverage: {quality.get('semantic_coverage_score', 'unknown')}")
+    print(f"Workflow density: {quality.get('workflow_density_score', 'unknown')}")
+    print(f"Phase errors: {quality.get('phase_error_count', 'unknown')}")
+    print(f"Long single-step segments: {quality.get('long_segment_single_step_count', 'unknown')}")
     print(f"Quality score: {quality.get('quality_score', 'unknown')}")
     print(f"Readiness: {quality.get('readiness', 'unknown')}")
     blockers = quality.get("readiness_blockers") or []

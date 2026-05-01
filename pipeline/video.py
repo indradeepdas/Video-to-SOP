@@ -68,13 +68,28 @@ def extract_frames(
     times = [min(duration, i * interval_seconds) for i in range(count)]
     if times[-1] < duration - 1:
         times.append(duration)
+    targets: list[tuple[int, float]] = []
+    seen_indices: set[int] = set()
+    for time_sec in times:
+        frame_index = max(0, min(total_frames - 1, int(round(time_sec * fps)))) if total_frames > 0 else int(round(time_sec * fps))
+        if frame_index in seen_indices:
+            continue
+        seen_indices.add(frame_index)
+        targets.append((frame_index, min(duration, frame_index / fps if fps else time_sec)))
 
     frames: list[dict[str, Any]] = []
     previous_thumb: np.ndarray | None = None
+    current_frame_index = -1
 
-    for index, time_sec in enumerate(times):
-        capture.set(cv2.CAP_PROP_POS_MSEC, max(0, time_sec * 1000))
-        ok, frame = capture.read()
+    for index, (target_frame_index, time_sec) in enumerate(targets):
+        while current_frame_index < target_frame_index:
+            ok = capture.grab()
+            if not ok:
+                break
+            current_frame_index += 1
+        if current_frame_index < target_frame_index:
+            break
+        ok, frame = capture.retrieve()
         if not ok or frame is None:
             continue
         frame = _resize_for_width(frame, max_width)

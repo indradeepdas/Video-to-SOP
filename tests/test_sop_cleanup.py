@@ -398,6 +398,109 @@ class SopCleanupTests(unittest.TestCase):
         self.assertEqual(len(result["steps"]), 1)
         self.assertEqual(result["steps"][0]["original_step_number"], 1)
 
+    def test_production_vision_low_step_density_blocks_demo_ready(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(index, f"Update workflow record field {index}.", system="Browser", start_time_seconds=index * 25)
+                for index in range(1, 18)
+            ],
+            metadata={
+                "event_segments": 21,
+                "generation_mode": "production_vision",
+                "video_duration_seconds": 516,
+                "target_event_density": 3.0,
+                "openai_configured": True,
+                "openai_calls_attempted": 2,
+                "openai_calls_succeeded": 2,
+                "ocr_available": True,
+                "ocr_non_empty_count": 17,
+            },
+        )
+        self.assertLess(result["quality_report"]["workflow_density_score"], 3.0)
+        self.assertLessEqual(result["quality_report"]["quality_score"], 79)
+        self.assertNotEqual(result["quality_report"]["readiness"], "demo_ready")
+        self.assertIn(
+            "Step density is too low for a production-vision workflow of this duration.",
+            result["quality_report"]["readiness_blockers"],
+        )
+
+    def test_long_single_step_segment_blocks_demo_ready(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(1, "Open the customer web app.", system="Browser", source_segment_duration_seconds=8),
+                step(2, "Search for the customer record.", system="Browser", source_segment_duration_seconds=9),
+                step(3, "Update the customer status field.", system="Browser", source_segment_duration_seconds=62),
+                step(4, "Submit the changes.", system="Browser", source_segment_duration_seconds=7),
+                step(5, "Validate that the confirmation message appears.", system="Browser", source_segment_duration_seconds=7),
+                step(6, "Export the customer report.", system="Browser", source_segment_duration_seconds=9),
+                step(7, "Save the downloaded report.", system="Browser", source_segment_duration_seconds=6),
+                step(8, "Close the process.", system="Browser", source_segment_duration_seconds=5),
+            ],
+            metadata={
+                "event_segments": 8,
+                "generation_mode": "production_vision",
+                "video_duration_seconds": 180,
+                "target_event_density": 3.0,
+                "openai_configured": True,
+                "openai_calls_attempted": 1,
+                "openai_calls_succeeded": 1,
+                "ocr_available": True,
+                "ocr_non_empty_count": 8,
+            },
+        )
+        self.assertEqual(result["quality_report"]["long_segment_single_step_count"], 1)
+        self.assertNotEqual(result["quality_report"]["readiness"], "demo_ready")
+        self.assertIn(
+            "One or more long workflow segments are represented by a single broad step.",
+            result["quality_report"]["readiness_blockers"],
+        )
+
+    def test_excel_pivot_phase_classifier_uses_action_intent(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(1, "Open the sales data workbook in Excel.", system="Excel"),
+                step(2, "Format the selected range as an Excel table.", system="Excel"),
+                step(3, "Create a PivotTable from the Excel table.", system="Excel"),
+                step(4, "Add Salesperson as a row field in the PivotTable.", system="Excel"),
+                step(5, "Rename the percentage measure.", system="Excel"),
+                step(6, "Insert a PivotChart.", system="Excel"),
+                step(7, "Apply the Region slicer to include all listed regions.", system="Excel"),
+            ],
+            metadata={"event_segments": 7},
+        )
+        self.assertEqual(
+            [item["phase"] for item in result["steps"]],
+            [
+                "Prepare source data",
+                "Create Excel table",
+                "Create PivotTable",
+                "Configure PivotTable fields",
+                "Add calculations and formatting",
+                "Build chart and slicer",
+                "Validate final output",
+            ],
+        )
+
+    def test_excel_pivot_benchmark_synonyms_do_not_trigger_false_missing_patterns(self) -> None:
+        result = clean_sop_steps(
+            [
+                step(1, "Display a PivotChart for the sales summary by salesperson.", system="Excel", ocr="PivotChart"),
+                step(2, "Open the Insert Slicers dialog for the PivotChart.", system="Excel", ocr="Insert Slicers Region"),
+                step(3, "Insert a Region slicer for the PivotChart.", system="Excel", ocr="Region slicer"),
+                step(4, "Apply a Region slicer selection to filter the PivotChart.", system="Excel", ocr="Region slicer filtered chart"),
+                step(5, "Use the Region slicer to show all regions.", system="Excel", ocr="Region slicer PivotChart all regions"),
+            ],
+            metadata={"event_segments": 5},
+        )
+        self.assertNotIn(
+            "Slicer application appears in the evidence but is not described operationally.",
+            result["quality_report"]["missing_action_patterns"],
+        )
+        self.assertNotIn(
+            "PivotChart creation appears in the evidence but is not described clearly.",
+            result["quality_report"]["missing_action_patterns"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
