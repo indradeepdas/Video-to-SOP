@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import asdict, dataclass
 from typing import Any
+
+from pipeline.runtime_config import get_config
 
 
 @dataclass(frozen=True)
@@ -89,17 +90,17 @@ def profile_to_dict(profile: QualityProfile) -> dict[str, Any]:
 
 
 def model_name() -> str:
-    return os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
+    return get_config("OPENAI_MODEL", DEFAULT_MODEL) or DEFAULT_MODEL
 
 
 def pricing_defaults() -> dict[str, float]:
     return {
-        "input_per_million": float(os.getenv("VIDEO2SOP_INPUT_PRICE_PER_1M", "5.00")),
-        "output_per_million": float(os.getenv("VIDEO2SOP_OUTPUT_PRICE_PER_1M", "30.00")),
-        "low_detail_image_tokens": float(os.getenv("VIDEO2SOP_LOW_DETAIL_IMAGE_TOKENS", "85")),
-        "text_input_tokens_per_event": float(os.getenv("VIDEO2SOP_TEXT_INPUT_TOKENS_PER_EVENT", "220")),
-        "output_tokens_per_step": float(os.getenv("VIDEO2SOP_OUTPUT_TOKENS_PER_STEP", "90")),
-        "fixed_prompt_tokens_per_call": float(os.getenv("VIDEO2SOP_FIXED_PROMPT_TOKENS_PER_CALL", "900")),
+        "input_per_million": float(get_config("VIDEO2SOP_INPUT_PRICE_PER_1M", "5.00") or "5.00"),
+        "output_per_million": float(get_config("VIDEO2SOP_OUTPUT_PRICE_PER_1M", "30.00") or "30.00"),
+        "low_detail_image_tokens": float(get_config("VIDEO2SOP_LOW_DETAIL_IMAGE_TOKENS", "85") or "85"),
+        "text_input_tokens_per_event": float(get_config("VIDEO2SOP_TEXT_INPUT_TOKENS_PER_EVENT", "220") or "220"),
+        "output_tokens_per_step": float(get_config("VIDEO2SOP_OUTPUT_TOKENS_PER_STEP", "90") or "90"),
+        "fixed_prompt_tokens_per_call": float(get_config("VIDEO2SOP_FIXED_PROMPT_TOKENS_PER_CALL", "900") or "900"),
     }
 
 

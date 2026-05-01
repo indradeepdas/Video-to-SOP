@@ -11,6 +11,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+os.environ["VIDEO2SOP_DISABLE_OPENAI"] = "1"
 
 from storage.jobs import create_job, get_job, init_db
 from worker import run_job
@@ -40,7 +41,6 @@ def build_video(video_path: Path) -> None:
 
 
 def main() -> int:
-    os.environ.pop("OPENAI_API_KEY", None)
     db = ROOT / "storage" / "jobs.sqlite3"
     job_id = "smoke_" + uuid.uuid4().hex[:8]
     job_dir = ROOT / "jobs" / job_id

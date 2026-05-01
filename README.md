@@ -9,6 +9,7 @@ The current implementation is local-first:
 - OCR enriches segment evidence when native Tesseract is installed. The app now resolves `TESSERACT_CMD`, PATH, and common Windows install paths.
 - Rule-based classification and deterministic cleanup reduce noise, passive filler, and weak duplicates.
 - OpenAI vision is required for production-grade SOP wording. Without OpenAI, the app can create an OCR draft when OCR text is available or a diagnostic draft when no semantic evidence is available.
+- `.env` and optional Streamlit secrets are loaded automatically, so first-time users do not need to pre-load shell variables manually.
 - The final DOCX includes screenshots, confidence indicators, timeline-safe phase sections, and a cleanup quality appendix.
 
 ## Product Promise
@@ -92,6 +93,7 @@ The main last-mile quality guard is now the deterministic cleanup layer in [pipe
 - `python-docx`
 - `openai`
 - `pytesseract`
+- `python-dotenv`
 - Native Tesseract OCR installed on the system. On Windows, the app also checks `C:\Program Files\Tesseract-OCR\tesseract.exe`.
 
 Python package dependencies are listed in [requirements.txt](<G:/My Drive/Video-to-SOP/requirements.txt>).
@@ -122,16 +124,44 @@ Check local prerequisites:
 python scripts\check_prereqs.py
 ```
 
+For a full first-run walkthrough, see [docs/quickstart.md](<G:/My Drive/Video-to-SOP/docs/quickstart.md>).
+
 ## OpenAI Configuration
 
-Set environment variables before launching the app:
+Recommended local `.env` setup:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+Set:
+
+```text
+OPENAI_API_KEY=your_api_key
+OPENAI_MODEL=gpt-5.5
+TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+```
+
+The app automatically loads `.env` from the repo root. You can also set real environment variables before launch:
 
 ```powershell
 $env:OPENAI_API_KEY="your_api_key"
 $env:OPENAI_MODEL="gpt-5.5"
 ```
 
-Or keep placeholders in a local `.env` file based on [.env.example](<G:/My Drive/Video-to-SOP/.env.example>). The app itself reads environment variables directly; if you use `.env`, load it in your shell or through local tooling before starting Streamlit.
+Optional Streamlit secrets are also supported through `.streamlit/secrets.toml`:
+
+```toml
+OPENAI_API_KEY = "your_api_key"
+OPENAI_MODEL = "gpt-5.5"
+```
+
+Configuration precedence is:
+
+```text
+real environment variable > .env > Streamlit secrets > default
+```
 
 If `OPENAI_API_KEY` is not set, the app uses OCR draft mode when OCR text exists. If neither OpenAI nor OCR text is available, the app blocks production SOP generation and only allows an explicit diagnostic draft.
 

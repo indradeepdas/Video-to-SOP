@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import re
 import time
 from pathlib import Path
@@ -111,7 +110,7 @@ Rules:
 def verify_steps(steps: list[dict[str, Any]], model: str | None = None, max_risky: int = 24) -> list[dict[str, Any]]:
     marked = mark_risks(steps)
     risky = [step for step in marked if step.get("risky")]
-    if not risky or not os.getenv("OPENAI_API_KEY"):
+    if not risky or not has_openai_key():
         return [
             {
                 **step,
@@ -124,7 +123,7 @@ def verify_steps(steps: list[dict[str, Any]], model: str | None = None, max_risk
             for step in marked
         ]
 
-    model = model or os.getenv("OPENAI_MODEL", "gpt-5.5")
+    model = model or get_config("OPENAI_MODEL", "gpt-5.5") or "gpt-5.5"
     risky = risky[:max_risky]
     try:
         verified = _call_verify(risky, model)
@@ -166,3 +165,4 @@ def verify_steps(steps: list[dict[str, Any]], model: str | None = None, max_risk
             }
         out.append(step)
     return out
+from pipeline.runtime_config import get_config, has_openai_key

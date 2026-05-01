@@ -8,6 +8,8 @@ from typing import Any
 
 import cv2
 
+from pipeline.runtime_config import get_config
+
 
 COMMON_TESSERACT_PATHS = [
     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
@@ -17,7 +19,7 @@ COMMON_TESSERACT_PATHS = [
 
 def resolve_tesseract_cmd() -> str | None:
     candidates = []
-    env_cmd = os.getenv("TESSERACT_CMD")
+    env_cmd = get_config("TESSERACT_CMD")
     if env_cmd:
         candidates.append(env_cmd)
     path_cmd = shutil.which("tesseract")

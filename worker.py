@@ -206,7 +206,7 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                         "event_segments": len(events),
                         "threshold": segmentation.get("threshold_info", {}).get("threshold"),
                     },
-                    "cost_estimate": estimate_job_cost(profile),
+                    "cost_estimate": estimate_job_cost(profile, use_openai=openai_ready),
                 }
             ),
         )
@@ -257,7 +257,7 @@ def run_job(job_id: str, job_dir: str | Path, db_path: str | Path) -> None:
                         "threshold": segmentation.get("threshold_info", {}).get("threshold"),
                     },
                     "warnings": warnings,
-                    "cost_estimate": estimate_job_cost(profile),
+                    "cost_estimate": estimate_job_cost(profile, use_openai=openai_ready),
                 }
             ),
         )

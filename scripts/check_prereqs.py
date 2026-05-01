@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 import tempfile
 from pathlib import Path
@@ -13,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from pipeline.capabilities import capability_status
 from pipeline.ocr import ocr_status, run_ocr
+from pipeline.runtime_config import runtime_config_status
 
 
 def build_ocr_image(path: Path) -> None:
@@ -22,9 +22,14 @@ def build_ocr_image(path: Path) -> None:
 
 
 def main() -> int:
+    config = runtime_config_status()
     status = capability_status()
     ocr = ocr_status()
+    print(f".env found: {config['dotenv_found']} ({config['dotenv_path']})")
+    print(f"Streamlit secrets found: {config['streamlit_secrets_found']} ({config['streamlit_secrets_path']})")
     print(f"OpenAI configured: {status['openai_configured']}")
+    print(f"OpenAI key source: {config['openai_key_source']}")
+    print(f"OpenAI model: {config['openai_model']} ({config['openai_model_source']})")
     print(f"Generation mode: {status['generation_mode']}")
     print(f"Tesseract available: {ocr.get('available')}")
     print(f"Tesseract command: {ocr.get('cmd')}")

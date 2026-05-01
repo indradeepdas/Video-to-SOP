@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import math
-import os
 import re
 import time
 from pathlib import Path
@@ -17,6 +16,7 @@ from pipeline.classify import classify_system
 from pipeline.clean_ocr import clean_text
 from pipeline.cluster import _action_hint, _similarity
 from pipeline.ocr import run_ocr
+from pipeline.runtime_config import has_openai_key
 from pipeline.video import _hash_distance
 
 
@@ -477,7 +477,7 @@ def review_ambiguous_boundaries(
     max_reviews: int,
     model: str,
 ) -> list[dict[str, Any]]:
-    if max_reviews <= 0 or not os.getenv("OPENAI_API_KEY") or len(segments) < 2:
+    if max_reviews <= 0 or not has_openai_key() or len(segments) < 2:
         return segments
     pairs = []
     for index in range(1, len(segments)):

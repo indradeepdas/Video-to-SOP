@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from pipeline.ocr import ocr_status
+from pipeline.runtime_config import config_source, has_openai_key
 
 
 PRODUCTION_VISION = "production_vision"
@@ -12,7 +12,7 @@ DIAGNOSTIC_ONLY = "diagnostic_only"
 
 
 def openai_configured() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY"))
+    return has_openai_key()
 
 
 def capability_status() -> dict[str, Any]:
@@ -27,6 +27,7 @@ def capability_status() -> dict[str, Any]:
     return {
         "generation_mode": mode,
         "openai_configured": openai_ready,
+        "openai_config_source": config_source("OPENAI_API_KEY") if openai_ready else "missing",
         "ocr_available": bool(ocr.get("available")),
         "ocr_status": ocr,
     }

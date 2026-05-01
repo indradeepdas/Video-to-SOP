@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 import time
 import uuid
@@ -10,6 +9,7 @@ import streamlit as st
 
 from pipeline.capabilities import DIAGNOSTIC_ONLY, capability_status
 from pipeline.config import DEFAULT_PROFILE, PROFILES, estimate_job_cost, get_profile, model_name, profile_to_dict
+from pipeline.runtime_config import has_openai_key
 from storage.jobs import create_job, get_job, init_db, list_jobs
 from worker import run_job
 
@@ -43,9 +43,12 @@ def main() -> None:
         st.subheader("Configuration")
         model = model_name()
         st.text_input("OpenAI model", value=model, disabled=True)
-        st.write("OpenAI:", "configured" if capabilities["openai_configured"] else "not configured")
+        if capabilities["openai_configured"]:
+            st.write("OpenAI:", f"configured from {capabilities.get('openai_config_source', 'configuration')}")
+        else:
+            st.write("OpenAI:", "missing")
         ocr = capabilities.get("ocr_status") or {}
-        st.write("OCR:", "available" if capabilities["ocr_available"] else "not installed")
+        st.write("OCR:", "available" if capabilities["ocr_available"] else "unavailable")
         if ocr.get("cmd"):
             st.caption(f"Tesseract: {ocr.get('cmd')}")
         st.write("Mode:", capabilities["generation_mode"].replace("_", " "))
@@ -65,7 +68,7 @@ def main() -> None:
         help="Balanced is designed for strong SOP quality while keeping API calls and image inputs capped.",
     )
     profile = get_profile(profile_name)
-    estimate = estimate_job_cost(profile, use_openai=bool(os.getenv("OPENAI_API_KEY")))
+    estimate = estimate_job_cost(profile, use_openai=has_openai_key())
     st.caption(
         "Estimated max API use: "
         f"{estimate['max_calls']} GPT calls, {estimate['image_count']} low-detail images, "

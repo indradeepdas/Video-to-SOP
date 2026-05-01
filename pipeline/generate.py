@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import re
 import time
 from pathlib import Path
@@ -267,8 +266,8 @@ def generate_steps(
     include_context_images: bool = True,
     run_stats: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    model = model or os.getenv("OPENAI_MODEL", "gpt-5.5")
-    use_openai = bool(os.getenv("OPENAI_API_KEY"))
+    model = model or get_config("OPENAI_MODEL", "gpt-5.5") or "gpt-5.5"
+    use_openai = has_openai_key()
     if run_stats is not None:
         run_stats.setdefault("openai_calls_attempted", 0)
         run_stats.setdefault("openai_calls_succeeded", 0)
@@ -337,3 +336,4 @@ def generate_steps(
     _audit_generated_steps(all_steps, events)
 
     return all_steps[:40]
+from pipeline.runtime_config import get_config, has_openai_key

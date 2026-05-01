@@ -62,6 +62,8 @@ class PipelineRuleTests(unittest.TestCase):
 
     def test_risk_marking_and_no_api_sanitization(self) -> None:
         old_key = os.environ.pop("OPENAI_API_KEY", None)
+        old_disable = os.environ.get("VIDEO2SOP_DISABLE_OPENAI")
+        os.environ["VIDEO2SOP_DISABLE_OPENAI"] = "1"
         try:
             steps = [
                 {
@@ -81,6 +83,10 @@ class PipelineRuleTests(unittest.TestCase):
         finally:
             if old_key:
                 os.environ["OPENAI_API_KEY"] = old_key
+            if old_disable is None:
+                os.environ.pop("VIDEO2SOP_DISABLE_OPENAI", None)
+            else:
+                os.environ["VIDEO2SOP_DISABLE_OPENAI"] = old_disable
 
     def test_validation_and_phase_grouping(self) -> None:
         steps = [
@@ -130,6 +136,8 @@ class PipelineRuleTests(unittest.TestCase):
         parsed = _extract_json("```json\n[{\"event_id\":1,\"confidence\":\"weird\"}]\n```")
         self.assertEqual(parsed[0]["event_id"], 1)
         old_key = os.environ.pop("OPENAI_API_KEY", None)
+        old_disable = os.environ.get("VIDEO2SOP_DISABLE_OPENAI")
+        os.environ["VIDEO2SOP_DISABLE_OPENAI"] = "1"
         try:
             steps = generate_steps(
                 [
@@ -147,9 +155,15 @@ class PipelineRuleTests(unittest.TestCase):
         finally:
             if old_key:
                 os.environ["OPENAI_API_KEY"] = old_key
+            if old_disable is None:
+                os.environ.pop("VIDEO2SOP_DISABLE_OPENAI", None)
+            else:
+                os.environ["VIDEO2SOP_DISABLE_OPENAI"] = old_disable
 
     def test_generate_marks_diagnostic_fallback_without_openai_or_ocr(self) -> None:
         old_key = os.environ.pop("OPENAI_API_KEY", None)
+        old_disable = os.environ.get("VIDEO2SOP_DISABLE_OPENAI")
+        os.environ["VIDEO2SOP_DISABLE_OPENAI"] = "1"
         try:
             steps = generate_steps(
                 [
@@ -168,9 +182,15 @@ class PipelineRuleTests(unittest.TestCase):
         finally:
             if old_key:
                 os.environ["OPENAI_API_KEY"] = old_key
+            if old_disable is None:
+                os.environ.pop("VIDEO2SOP_DISABLE_OPENAI", None)
+            else:
+                os.environ["VIDEO2SOP_DISABLE_OPENAI"] = old_disable
 
     def test_generate_marks_local_ocr_without_openai(self) -> None:
         old_key = os.environ.pop("OPENAI_API_KEY", None)
+        old_disable = os.environ.get("VIDEO2SOP_DISABLE_OPENAI")
+        os.environ["VIDEO2SOP_DISABLE_OPENAI"] = "1"
         try:
             steps = generate_steps(
                 [
@@ -188,6 +208,10 @@ class PipelineRuleTests(unittest.TestCase):
         finally:
             if old_key:
                 os.environ["OPENAI_API_KEY"] = old_key
+            if old_disable is None:
+                os.environ.pop("VIDEO2SOP_DISABLE_OPENAI", None)
+            else:
+                os.environ["VIDEO2SOP_DISABLE_OPENAI"] = old_disable
 
     def test_generate_records_openai_failure(self) -> None:
         stats = {}

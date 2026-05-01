@@ -13,12 +13,54 @@ Configuration is intentionally simple. Most runtime behavior comes from:
 | --- | --- | --- |
 | `OPENAI_API_KEY` | unset | Enables GPT generation, ambiguous-boundary review, and risky-step verification. |
 | `OPENAI_MODEL` | `gpt-5.5` | Model used for OpenAI-backed generation and review. |
+| `TESSERACT_CMD` | unset | Optional path to the native Tesseract executable. |
+| `VIDEO2SOP_DISABLE_OPENAI` | unset | Set to `1` for smoke tests or local demos that must not make API calls. |
+| `VIDEO2SOP_DOTENV_PATH` | repo `.env` | Optional override for the `.env` file path. |
+| `VIDEO2SOP_STREAMLIT_SECRETS_PATH` | `.streamlit/secrets.toml` | Optional override for Streamlit secrets path. |
 | `VIDEO2SOP_INPUT_PRICE_PER_1M` | `5.00` | Input token price used for cost estimation. |
 | `VIDEO2SOP_OUTPUT_PRICE_PER_1M` | `30.00` | Output token price used for cost estimation. |
 | `VIDEO2SOP_LOW_DETAIL_IMAGE_TOKENS` | `85` | Estimated low-detail image token count used in cost estimation. |
 | `VIDEO2SOP_TEXT_INPUT_TOKENS_PER_EVENT` | `220` | Estimated text input tokens per event used in cost estimation. |
 | `VIDEO2SOP_OUTPUT_TOKENS_PER_STEP` | `90` | Estimated output tokens per step used in cost estimation. |
 | `VIDEO2SOP_FIXED_PROMPT_TOKENS_PER_CALL` | `900` | Estimated fixed prompt overhead per call used in cost estimation. |
+
+## Runtime Configuration Loading
+
+The app loads configuration automatically at startup.
+
+Supported sources:
+
+1. real environment variables
+2. repo-root `.env`
+3. `.streamlit/secrets.toml`
+4. built-in defaults
+
+Precedence:
+
+```text
+real environment variable > .env > Streamlit secrets > default
+```
+
+Example `.env`:
+
+```text
+OPENAI_API_KEY=your_api_key
+OPENAI_MODEL=gpt-5.5
+TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+```
+
+Example `.streamlit/secrets.toml`:
+
+```toml
+OPENAI_API_KEY = "your_api_key"
+OPENAI_MODEL = "gpt-5.5"
+```
+
+The prerequisite check reports where the app found configuration without printing secret values:
+
+```powershell
+python scripts\check_prereqs.py
+```
 
 ## Quality Profiles
 
@@ -190,6 +232,8 @@ Optional local override:
 ```powershell
 $env:TESSERACT_CMD="C:\Program Files\Tesseract-OCR\tesseract.exe"
 ```
+
+The same value can be stored in `.env`.
 
 Check prerequisites:
 

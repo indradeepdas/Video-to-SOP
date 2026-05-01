@@ -79,6 +79,12 @@ $env:OPENAI_API_KEY
 $env:OPENAI_MODEL
 ```
 
+Also run:
+
+```powershell
+python scripts\check_prereqs.py
+```
+
 Common causes:
 
 - missing API key
@@ -88,6 +94,53 @@ Common causes:
 - account or billing problem
 
 If OpenAI fails, the pipeline falls back locally where possible.
+
+## `.env` Exists But OpenAI Is Not Detected
+
+The app now auto-loads `.env` from the repo root. If OpenAI is still missing:
+
+- confirm the file is named exactly `.env`
+- confirm it is in the repo root, next to `app.py`
+- confirm the key is not left as `replace_me`
+- restart Streamlit after editing `.env`
+- check whether `VIDEO2SOP_DISABLE_OPENAI=1` is set
+
+Run:
+
+```powershell
+python scripts\check_prereqs.py
+```
+
+The output should show `.env found`, `OpenAI configured`, and `OpenAI key source`.
+
+## Tesseract Installed But Not Detected
+
+If OCR is unavailable after installing Tesseract:
+
+- restart PowerShell and Streamlit
+- confirm the binary exists at `C:\Program Files\Tesseract-OCR\tesseract.exe`
+- add `TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe` to `.env`
+
+Run:
+
+```powershell
+python scripts\check_prereqs.py
+```
+
+The check prints the resolved command, version, and OCR smoke text.
+
+## App Is Stuck In Diagnostic Mode
+
+Diagnostic mode means the app has neither OpenAI vision nor usable OCR text.
+
+Fix in this order:
+
+1. configure `OPENAI_API_KEY`
+2. install Tesseract
+3. run `python scripts\check_prereqs.py`
+4. restart Streamlit
+
+Diagnostic drafts are intentionally blocked from `demo_ready`.
 
 ## SOP Looks Too Generic
 
@@ -101,10 +154,14 @@ Likely causes:
 
 Try:
 
+- confirming the sidebar says `Mode: production vision`
 - installing native Tesseract
+- setting `OPENAI_API_KEY` in `.env`
 - using `Balanced` or `Highest accuracy`
 - recording at higher resolution
 - leaving each meaningful screen visible slightly longer
+
+If many rows say “Review the process state shown,” the run likely used diagnostic fallback or had too little semantic evidence.
 
 ## Too Many Duplicate Or Weak Review Steps
 
