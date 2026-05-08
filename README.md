@@ -380,7 +380,5 @@ The test suite currently covers:
 
 - SOP quality still depends on source recording quality.
 - Very fast actions between sampled frames may still be missed.
-- OCR quality depends heavily on text size, contrast, and Tesseract availability.
 - Browser-based internal tools can still be hard to classify precisely without stronger visible labels.
-- The smoke test proves pipeline continuity, not product-quality SOP output.
 - The app is local and single-user; it is not a hosted multi-user service.
